@@ -1,18 +1,10 @@
 import cherrypy
-from collection import Collection
-from root import Root
-
-conf = {
-    'global': {
-        'server.socket_host': '0.0.0.0',
-        'server.socket_port': 8080,
-    },
-    '/': {
-        'request.dispatch': cherrypy.dispatch.MethodDispatcher(),
-    },
-}
+from controllers.calculate import Calculate
+from controllers.collections import Collections
+from controllers.root import Root
 
 root = Root()
-root.collection = Collection()
+root.calculate = Calculate()
+root.collections = Collections()
 
-cherrypy.quickstart(root, '/', conf)
+cherrypy.quickstart(root, config='config/prod.conf')
