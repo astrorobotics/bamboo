@@ -1,10 +1,11 @@
 import cherrypy
+
 from controllers.calculate import Calculate
-from controllers.collections import Collections
+from controllers.datasets import Datasets
 from controllers.root import Root
 
 root = Root()
 root.calculate = Calculate()
-root.collections = Collections()
+root.datasets = Datasets()
 
 cherrypy.quickstart(root, config='config/prod.conf')

@@ -7,19 +7,18 @@ Dependencies
 Installation
 ============
 
-    cd virtual_environments
+    ./install.sh
 
-    virtualenv --no-site-packages bamboo
+Testing
+=======
 
-    source bamboo/bin/activate
+    [install nose testing library]
+    
+    pip install nose
 
-    git clone git@github.com:pld/bamboo.git
+    [run tests]
 
-Install the requirements:
-
-    cd bamboo
-
-    pip install -r requirements.pip
+    nosetests
 
 Running
 =======
@@ -27,3 +26,8 @@ Running
     [start mongodb on localhost and standard port]
 
     python bamboo.py
+
+Example Usage
+=============
+
+    curl -X POST -d "url=http://formhub.org/mberg/forms/good_eats/data.csv" http://localhost:8080/datasets

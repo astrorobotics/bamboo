@@ -1,27 +1,26 @@
 import json
 
-import cherrypy
-
-from lib.constants import BAMBOO_ID
-from config.db import db
-from stats import summarize_df
-from lib.utils import mongo_to_df, series_to_jsondict
+from lib.stats import summarize_with_groups
+from lib.utils import mongo_to_df
+from models.dataset import Dataset
+from models.observation import Observation
 
 class Calculate(object):
+    'Calculate controller'
 
     def __init__(self):
         pass
 
     exposed = True
 
-    def GET(self, id=None, group=None, query=None):
-        if id:
-            # query for data related to id
-            r = [x for x in db().collections.find({BAMBOO_ID: id})]
-            df = mongo_to_df(r)
-            # calculate summary statistics
-            stats = {"(ALL)" : summarize_df(df)}
-            if group:
-                grouped_stats = series_to_jsondict(df.groupby(group).apply(summarize_df))
-                stats.update(grouped_stats)
+    def GET(self, id, group=None, query=None):
+        """
+        Retrieve a calculation for dataframe with hash 'id'.
+        Retrieve data frame using query 'query' and group by 'group'.
+        """
+        dataset = Dataset.find_one(id)
+        if dataset:
+            observations = Observation.find(dataset, query, as_df=True)
+            stats = summarize_with_groups(observations, group)
             return json.dumps(stats)
+        return 'dataset not found'

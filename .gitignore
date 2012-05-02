@@ -1,2 +1,6 @@
+/*.csv
 *.pyc
 *~
+
+# a place for a virtualenv
+env
