@@ -1,6 +1,6 @@
 import json
 
-from lib.utils import mongo_to_json
+from lib.mongo import mongo_to_json
 from lib.io import create_dataset_from_url, open_data_file
 from lib.summary import summarize
 from models.dataset import Dataset
@@ -46,4 +46,4 @@ class Datasets(object):
         Read data from URL 'url'.
         If URL is not provided and data is provided, read posted data 'data'.
         """
-        return json.dumps({'id': create_dataset_from_url(url)})
+        return json.dumps(create_dataset_from_url(url))
