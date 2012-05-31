@@ -2,6 +2,7 @@ from pandas import DataFrame, read_csv
 from pymongo.cursor import Cursor
 
 from lib.constants import MONGO_RESERVED_KEYS
+from lib.exceptions import JSONError
 from lib.mongo import _prefix_mongo_reserved_key, mongo_decode_keys
 from lib.io import open_data_file
 from models.dataset import Dataset
@@ -55,8 +56,29 @@ class TestObservation(TestBase):
 
     def test_find_with_bad_query_json(self):
         Observation.save(self.data, self.dataset)
-        cursor = Observation.find(self.dataset, '{rating: "delectible"}')
-        self.assertTrue(isinstance(cursor, basestring))
+        self.assertRaises(JSONError, Observation.find, self.dataset,
+                '{rating: "delectible"}')
+
+    def test_find_with_select(self):
+        Observation.save(self.data, self.dataset)
+        cursor = Observation.find(self.dataset, select='{"rating": 1}')
+        self.assertTrue(isinstance(cursor, Cursor))
+        results = [row for row in cursor]
+        self.assertEquals(sorted(results[0].keys()), ['_id', 'rating'])
+
+
+    def test_find_with_bad_select(self):
+        Observation.save(self.data, self.dataset)
+        self.assertRaises(JSONError, Observation.find, self.dataset,
+                select='{rating: 1}')
+
+    def test_find_with_select_and_query(self):
+        Observation.save(self.data, self.dataset)
+        cursor = Observation.find(self.dataset, '{"rating": "delectible"}',
+                '{"rating": 1}')
+        self.assertTrue(isinstance(cursor, Cursor))
+        results = [row for row in cursor]
+        self.assertEquals(sorted(results[0].keys()), ['_id', 'rating'])
 
     def test_delete(self):
         Observation.save(self.data, self.dataset)

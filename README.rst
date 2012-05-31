@@ -12,30 +12,47 @@ Dependencies
 * mongodb
 
 Installation
-============
+------------
     
-    ./bin/install.sh
+    ``./bin/install.sh``
 
 Running
-=======
+-------
 
-    [start mongodb on localhost and standard port]
+    start mongodb on localhost and standard port
 
     ``python bamboo.py``
 
 Testing
-=======
+-------
 
-    [install nose testing requirements]
+    install nose testing requirements
     
     ``pip install -r requirements-test.pip``
 
-    [run tests]
+    run tests
 
     ``nosetests --with-progressive --with-cov``
 
+Documentation
+-------------
+
+Viewing Documentation
+^^^^^^^^^^^^^^^^^^^^^
+
+    The latest docs are available at http://bamboo.modilabs.org/
+    
+Building Documentation
+^^^^^^^^^^^^^^^^^^^^^^
+
+    ``pip install -r requirements-docs.pip``
+
+    ``cd doc``
+
+    ``make html``
+
 Contributing Code
-=================
+-----------------
 
 To work on the code:
 
@@ -46,6 +63,6 @@ To work on the code:
 5. submit a pull request
 
 Example Usage
-=============
+-------------
 
     ``curl -X POST -d "url=http://formhub.org/mberg/forms/good_eats/data.csv" http://localhost:8080/datasets``

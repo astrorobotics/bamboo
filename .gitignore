@@ -4,5 +4,8 @@
 .coverage
 .noseids
 
+# built docs
+docs/_build
+
 # a place for a virtualenv
 env
