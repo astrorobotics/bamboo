@@ -1,12 +1,13 @@
-from base64 import b64encode
 import json
+import numpy as np
 import re
 
 from bson import json_util
 from pandas import DataFrame
 
 from lib.constants import DATASET_OBSERVATION_ID, DEFAULT_HASH_ALGORITHM,\
-         MONGO_RESERVED_KEYS, MONGO_RESERVED_KEY_PREFIX
+         ENCODED_DOLLAR, ENCODED_DOT, ENCODED_KEY_REGEX, MONGO_RESERVED_KEYS,\
+         MONGO_RESERVED_KEY_PREFIX
 from lib.utils import df_to_jsondict, get_json_value
 
 
@@ -40,12 +41,39 @@ def _is_invalid_for_mongo(key):
     return key.startswith('$') or key.count('.') > 0
 
 
+def _is_encoded_key(key):
+    return True if ENCODED_KEY_REGEX.search(key) else False
+
+
+def dict_from_mongo(_dict):
+    """
+    Return the dictionary *_dict* (which may have other internal data structures)
+    with any keys decoded if they had been previously encoded for mongo.
+    """
+    for key, value in _dict.iteritems():
+        if _is_encoded_key(key):
+            del _dict[key]
+            key = _decode_from_mongo(key)
+        elif type(value) == dict:
+            value = dict_from_mongo(value)
+        _dict[key] = value
+    return _dict
+
+
 def _encode_for_mongo(key):
     """
     Base64 encode keys that begin with a '$' or contain a '.'
     """
-    return reduce(lambda s, c: re.sub(c[0], b64encode(c[1]), s),
-            [(r'^\$', '$'), (r'\.', '.')], key)
+    return reduce(lambda s, c: re.sub(c[0], c[1], s),
+            [(r'^\$', ENCODED_DOLLAR), (r'\.', ENCODED_DOT)], key)
+
+
+def _decode_from_mongo(key):
+    """
+    Decode Base64 keys that contained a '$' or '.'
+    """
+    return reduce(lambda s, c: re.sub(c[0], c[1], s),
+            [(r'^%s' % ENCODED_DOLLAR, '$'), (r'%s' % ENCODED_DOT, '.')], key)
 
 
 def _prefix_mongo_reserved_key(key):
@@ -60,6 +88,9 @@ def mongo_to_df(cursor):
 
 
 def mongo_to_json(cursor):
+    """
+    Convert mongo *cursor* to json dict, via dataframe, then dump to JSON.
+    """
     jsondict = df_to_jsondict(mongo_to_df(cursor))
     return dump_mongo_json(jsondict)
 
@@ -75,13 +106,21 @@ def mongo_decode_keys(observations):
     """
     for observation in observations:
         observation.pop(DATASET_OBSERVATION_ID, None)
+        observation = mongo_remove_reserved_keys(observation)
 
-        for key, value in observation.items():
-            if key in MONGO_RESERVED_KEYS and observation.get(
-                    _prefix_mongo_reserved_key(key)):
-                value = observation.pop(_prefix_mongo_reserved_key(key))
-                if value != 'null':
-                    observation[key] = value
-                else:
-                    observation.pop(key, None)
     return observations
+
+def mongo_remove_reserved_keys(_dict):
+    for key, value in _dict.items():
+        if key in MONGO_RESERVED_KEYS:
+            prefixed_key = _prefix_mongo_reserved_key(key)
+            if _dict.get(prefixed_key):
+                # replace reserved key value with original key value
+                value = _dict.pop(prefixed_key)
+                _dict[key] = value
+            else:
+                # remove mongo reserved keys
+                del _dict[key]
+        elif value == 'null':
+            _dict[key] = np.nan
+    return _dict

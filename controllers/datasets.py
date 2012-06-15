@@ -1,9 +1,9 @@
-import json
-
+from lib.constants import ALL, ERROR, SUCCESS
 from lib.exceptions import JSONError
 from lib.mongo import mongo_to_json
-from lib.io import create_dataset_from_url, open_data_file
-from lib.summary import summarize
+from lib.io import create_dataset_from_url, create_dataset_from_csv
+from lib.tasks.summarize import summarize
+from lib.utils import dump_or_error
 from models.dataset import Dataset
 from models.observation import Observation
 
@@ -15,7 +15,7 @@ class Datasets(object):
 
     def DELETE(self, dataset_id):
         """
-        Delete observations (i.e. the dataset) with hash 'dataset_id' from mongo
+        Delete observations (i.e. the dataset) with hash *dataset_id* from mongo
         """
         dataset = Dataset.find_one(dataset_id)
         result = None
@@ -23,14 +23,14 @@ class Datasets(object):
         if dataset:
             Dataset.delete(dataset_id)
             Observation.delete(dataset)
-            result = {'success': 'deleted dataset: %s' % dataset_id}
-        return json.dumps(result or {'error': 'id not found'})
+            result = {SUCCESS: 'deleted dataset: %s' % dataset_id}
+        return dump_or_error(result, 'id not found')
 
     def GET(self, dataset_id, summary=False, query='{}', select=None,
-            group=None):
+            group=ALL):
         """
-        Return data set for hash 'dataset_id' in format 'format'.
-        Execute query 'query' in mongo if passed.
+        Return data set for hash *dataset_id*.
+        Execute query *query* in mongo if passed.
         If summary is passed return summary statistics for data set.
         If group is passed group the summary, if summary is false group is
         ignored.
@@ -43,15 +43,25 @@ class Datasets(object):
                 if summary:
                     result = summarize(dataset, query, select, group)
                 else:
-                    return mongo_to_json(Observation.find(dataset, query, select))
+                    return mongo_to_json(Observation.find(dataset, query,
+                                select))
         except JSONError, e:
-            result = {'error': e.__str__()}
+            result = {ERROR: e.__str__()}
 
-        return json.dumps(result or {'error': 'id not found'})
+        return dump_or_error(result, 'id not found')
 
-    def POST(self, url=None):
+    def POST(self, url=None, csv_file=None):
         """
-        Read data from URL 'url'.
-        If URL is not provided and data is provided, read posted data 'data'.
+        If *url* is provided read data from URL *url*.
+        If *csv_file* is provided read data from *csv_file*.
+        Otherwise return an error message.
         """
-        return json.dumps(create_dataset_from_url(url))
+        result = None
+
+        if url:
+            result = create_dataset_from_url(url)
+
+        if csv_file:
+            result = create_dataset_from_csv(csv_file)
+
+        return dump_or_error(result, 'url or csv_file required')

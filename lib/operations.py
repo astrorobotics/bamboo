@@ -40,6 +40,15 @@ class EvalConstant(EvalTerm):
             return row[self.value]
 
 
+class EvalString(EvalTerm):
+    """
+    Class to evaluate a parsed string.
+    """
+
+    def _eval(self, row):
+        return self.value
+
+
 class EvalSignOp(EvalTerm):
     """
     Class to evaluate expressions with a leading + or - sign
@@ -67,15 +76,12 @@ class EvalBinaryArithOp(EvalTerm):
     }
 
     def _eval(self, row):
-        try:
-            result = np.float64(self.value[0]._eval(row))
-            for op, val in self.operator_operands(self.value[1:]):
-                val = np.float64(val._eval(row))
-                result = self.operation(op, result, val)
-                if np.isinf(result):
-                    return np.nan
-        except (ValueError, ZeroDivisionError):
-            return np.nan
+        result = np.float64(self.value[0]._eval(row))
+        for op, val in self.operator_operands(self.value[1:]):
+            val = np.float64(val._eval(row))
+            result = self.operation(op, result, val)
+            if np.isinf(result):
+                return np.nan
         return result
 
 
@@ -169,3 +175,16 @@ class EvalOrOp(EvalBinaryBooleanOp):
     Class to distinguish precedence of or expressions
     """
     pass
+
+
+class EvalInOp(EvalTerm):
+    """
+    Class to eval in expressions.
+    """
+
+    def _eval(self, row):
+        val_to_test = str(self.value[0]._eval(row))
+        val_list = []
+        for op, val in self.operator_operands(self.value[1:]):
+            val_list.append(val._eval(row))
+        return val_to_test in val_list

@@ -1,8 +1,9 @@
+import json
 from math import isnan
 
 import numpy as np
 
-from constants import JSON_NULL
+from constants import ERROR, JSON_NULL
 
 
 def is_float_nan(num):
@@ -26,3 +27,7 @@ def series_to_jsondict(series):
 
 def df_to_jsondict(dframe):
     return [series_to_jsondict(series) for idx, series in dframe.iterrows()]
+
+
+def dump_or_error(data, error_message):
+    return json.dumps(data or {ERROR: error_message})

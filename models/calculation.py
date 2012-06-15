@@ -1,8 +1,10 @@
-from lib.constants import DATASET_ID
+from lib.constants import ALL, DATASET_ID, ERROR, STATS
 from lib.exceptions import ParseError
+from lib.mongo import mongo_remove_reserved_keys
 from lib.parser import Parser
 from lib.tasks.calculator import calculate_column
 from models.abstract_model import AbstractModel
+from models.dataset import Dataset
 from models.observation import Observation
 
 
@@ -35,7 +37,7 @@ class Calculation(AbstractModel):
             cls.parser.validate_formula(formula, row)
         except ParseError, err:
             # do not save record, return error
-            return {'error': err}
+            return {ERROR: err}
 
         record = {
             DATASET_ID: dataset[DATASET_ID],
@@ -44,15 +46,22 @@ class Calculation(AbstractModel):
         }
         cls.collection.insert(record)
 
+        # invalidate summary ALL since we have a new column
+        stats = dataset.get(STATS)
+        if stats:
+            del stats[ALL]
+            del dataset[STATS]
+            Dataset.update(dataset, {STATS: stats})
+
         # call remote calculate and pass calculation id
         calculate_column.delay(dataset, dframe, formula, name)
-        return record
+        return mongo_remove_reserved_keys(record)
 
     @classmethod
     def find(cls, dataset):
         """
         Return the calculations for given *dataset*.
         """
-        return cls.collection.find({
+        return [mongo_remove_reserved_keys(record) for record in cls.collection.find({
             DATASET_ID: dataset[DATASET_ID],
-        })
+        })]
