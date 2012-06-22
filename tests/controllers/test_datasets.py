@@ -1,10 +1,13 @@
 import json
 
 from controllers.datasets import Datasets
-from lib.constants import CREATED_AT, ERROR, ID, MONGO_RESERVED_KEYS, SCHEMA,\
-         SUCCESS, SUMMARY, UPDATED_AT
+from lib.constants import CREATED_AT, ERROR, ID, MODE_INFO,\
+        MODE_SUMMARY, MONGO_RESERVED_KEYS, SCHEMA, SUCCESS,\
+        SUMMARY, UPDATED_AT
 from lib.decorators import requires_internet
 from lib.io import create_dataset_from_url
+from lib.utils import build_labels_to_slugs
+from models.dataset import Dataset
 from tests.test_base import TestBase
 from tests.mock import MockUploadedFile
 
@@ -37,10 +40,13 @@ class TestDatasets(TestBase):
         columns = [col for col in
                 self.test_data[self._file_name].columns.tolist()
                 if not col in MONGO_RESERVED_KEYS]
+        dataset = Dataset.find_one(self.dataset_id)
+        labels_to_slugs = build_labels_to_slugs(dataset)
         for col in columns:
-            self.assertTrue(col in result_keys, 'col: %s in: %s' % (col,
-                        result_keys))
-            self.assertTrue(SUMMARY in results[col].keys())
+            slug = labels_to_slugs[col]
+            self.assertTrue(slug in result_keys,
+                    'col (slug): %s in: %s' % (slug, result_keys))
+            self.assertTrue(SUMMARY in results[slug].keys())
 
     def _test_get_with_query_or_select(self, query='{}', select=None):
         self._post_file()
@@ -85,7 +91,8 @@ class TestDatasets(TestBase):
 
     def test_GET_schema(self):
         self._post_file()
-        results = json.loads(self.controller.GET(self.dataset_id, info=True))
+        results = json.loads(self.controller.GET(self.dataset_id,
+                mode=MODE_INFO))
         self.assertTrue(isinstance(results, dict))
         result_keys = results.keys()
         for key in [CREATED_AT, ID, SCHEMA, UPDATED_AT]:
@@ -115,14 +122,14 @@ class TestDatasets(TestBase):
 
     def test_GET_summary(self):
         self._post_file()
-        results = self.controller.GET(self.dataset_id, summary=True)
+        results = self.controller.GET(self.dataset_id, mode=MODE_SUMMARY)
         results = self._test_summary_results(results)
         self._test_summary_no_group(results)
 
     def test_GET_summary_with_query(self):
         self._post_file()
         # (sic)
-        results = self.controller.GET(self.dataset_id, summary=True,
+        results = self.controller.GET(self.dataset_id, mode=MODE_SUMMARY,
                     query='{"rating": "delectible"}')
         results = self._test_summary_results(results)
         self._test_summary_no_group(results)
@@ -135,8 +142,8 @@ class TestDatasets(TestBase):
         ]
 
         for group, column_values in groups:
-            json_results = self.controller.GET(self.dataset_id, summary=True,
-                        group=group)
+            json_results = self.controller.GET(self.dataset_id,
+                    mode=MODE_SUMMARY, group=group)
             results = self._test_summary_results(json_results)
             result_keys = results.keys()
 
@@ -153,7 +160,7 @@ class TestDatasets(TestBase):
 
     def test_GET_summary_with_group_and_query(self):
         self._post_file()
-        results = self.controller.GET(self.dataset_id, summary=True,
+        results = self.controller.GET(self.dataset_id, mode=MODE_SUMMARY,
                     group='rating', query='{"rating": "delectible"}')
         self._test_summary_results(results)
 
