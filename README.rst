@@ -11,9 +11,12 @@ Dependencies
 * python
 * mongodb
 
-Arch: ``# pacman -S blas lapack gcc-fortran``
+for numpy, pandas, and scipy (in requirements.pip):
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Ubuntu: ``# apt-get install liblapack-dev gfortran``
+on Arch Linux: ``# pacman -S blas lapack gcc-fortran``
+
+on Debian based: ``# apt-get install gfortran libatlas-base-dev``
 
 Installation
 ------------

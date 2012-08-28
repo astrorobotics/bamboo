@@ -20,6 +20,7 @@ MODE_INFO = 'info'
 # common MongoDB keys
 BAMBOO_RESERVED_KEY_PREFIX = 'BAMBOO_RESERVED_KEY_'
 DATASET_ID = BAMBOO_RESERVED_KEY_PREFIX + 'dataset_id'
+LINKED_DATASETS = BAMBOO_RESERVED_KEY_PREFIX + 'linked_datasets'
 DATASET_OBSERVATION_ID = BAMBOO_RESERVED_KEY_PREFIX + 'dataset_observation_id'
 
 # special MongoDB keys
@@ -36,8 +37,11 @@ ID = 'id'
 SUCCESS = 'success'
 
 # metadata
+ATTRIBUTION = 'attribution'
 CREATED_AT = 'created_at'
+DESCRIPTION = 'description'
 LABEL = 'label'
+LICENSE = 'license'
 OLAP_TYPE = 'olap_type'
 SCHEMA = 'schema'
 SIMPLETYPE = 'simpletype'
@@ -72,8 +76,3 @@ DTYPE_TO_OLAP_TYPE_MAP = {
 
 # batch size for bulk inserts
 DB_BATCH_SIZE = 1000
-
-# regex for finding encoded mongo keys
-ENCODED_DOLLAR = 'JA=='
-ENCODED_DOT = 'Lg=='
-ENCODED_KEY_REGEX = re.compile(r'%s|%s' % (ENCODED_DOLLAR, ENCODED_DOT))

@@ -13,6 +13,7 @@ class TestBase(unittest.TestCase):
     TEST_DATASETS = [
         'good_eats.csv',
         'good_eats_large.csv',
+        'good_eats_with_calculations.csv',
         'kenya_secondary_schools_2007.csv',
     ]
 
@@ -36,6 +37,6 @@ class TestBase(unittest.TestCase):
     def _load_test_data(self):
         for dataset_name in self.TEST_DATASETS:
             f = open_data_file('file://tests/fixtures/%s' % dataset_name,
-                    allow_local_file=True)
+                               allow_local_file=True)
             self.test_data[dataset_name] = read_csv(f)
             self.test_dataset_ids[dataset_name] = uuid.uuid4().hex
