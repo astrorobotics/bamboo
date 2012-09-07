@@ -29,25 +29,50 @@ on Debian based: ``# apt-get install gfortran libatlas-base-dev``
 Installation
 ------------
     
-    ``./bin/install.sh``
+    ``$ ./scripts/install.sh``
 
-Running
--------
+Running the server
+------------------
 
     start mongodb on localhost and standard port
 
-    ``python bamboo.py``
+::
+
+    $ cd bamboo
+    $ python run_server.py
+
+Running the server as a daemon
+
+------------------------------
+
+    start mongodb on localhost and standard port
+
+    1. create a user named 'bamboo', with home directory ``/home/bamboo``
+    2. create a virtualenv using virtualenvwrapper called 'bamboo'
+    3. place the bamboo root directory in ``/var/www/bamboo/current``
+
+    start the daemon using:
+
+    ``$ /var/www/bamboo/current/scripts/bamboo.sh start``
+
+    stop the daemon using:
+
+    ``$ /var/www/bamboo/current/scripts/bamboo.sh stop``
+
 
 Testing
 -------
 
     install nose testing requirements
     
-    ``pip install -r requirements-test.pip``
+    ``$ pip install -r requirements-test.pip``
 
     run tests
 
-    ``nosetests --with-progressive --with-cov``
+::
+
+    $ cd bamboo
+    $ ./test.sh
 
 Documentation
 -------------
@@ -62,9 +87,9 @@ Building Documentation
 
 ::
 
-    pip install -r requirements-docs.pip
-    cd docs
-    make html
+    $ pip install -r requirements-docs.pip
+    $ cd docs
+    $ make html
 
 Contributing Code
 -----------------
@@ -74,8 +99,17 @@ To work on the code:
 1. fork this github project
 2. add tests for your new feature
 3. add the code for your new feature
-4. ensure all existing tests and your new tests are passing
-5. submit a pull request
+4. ensure it is pep8
+
+    ``$ pip install pep8``
+    
+    ``$ pep8 bamboo``
+
+5. ensure all existing tests and your new tests are passing
+
+    ``$ cd bamboo && ./test.sh``
+
+6. submit a pull request
 
 Example Usage
 -------------
@@ -85,11 +119,11 @@ On the remote server
 
     running the example basic commands
 
-    ``./bin/commands.sh``
+    ``$ ./scripts/commands.sh``
 
     posting a dataset
 
-    ``curl -X POST -d "url=http://formhub.org/mberg/forms/good_eats/data.csv" http://bamboo.io/datasets``
+    ``$ curl -X POST -d "url=http://formhub.org/mberg/forms/good_eats/data.csv" http://bamboo.io/datasets``
 
 On your local server
 ^^^^^^^^^^^^^^^^^^^
@@ -98,8 +132,8 @@ On your local server
 
     run the example basic commands
 
-    ``./bin/commands.sh -l``
+    ``$ ./scripts/commands.sh -l``
 
     make requests from your local server
 
-    ``curl -X POST -d "url=http://formhub.org/mberg/forms/good_eats/data.csv" http://localhost:8080/datasets``
+    ``$ curl -X POST -d "url=http://formhub.org/mberg/forms/good_eats/data.csv" http://localhost:8080/datasets``

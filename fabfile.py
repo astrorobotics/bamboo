@@ -47,7 +47,7 @@ def deploy(deployment_name):
     # update code
     with cd(env.code_src):
         run('git pull origin %(branch)s' % env)
-        run('find . -name "*.pyc" -exec rm -rf {} \;')
+        run('find . -name "*.pyc" -delete')
 
     # update docs
     with cd(env.doc_src):
@@ -58,4 +58,4 @@ def deploy(deployment_name):
 
     # restart the server
     with cd(env.code_src):
-        _run_in_virtualenv('./bin/bamboo.sh restart')
+        _run_in_virtualenv('./scripts/bamboo.sh restart')
