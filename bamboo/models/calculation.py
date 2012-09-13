@@ -1,4 +1,4 @@
-from lib.constants import ALL, DATASET_ID, ERROR, STATS
+from lib.constants import DATASET_ID, ERROR, STATS
 from lib.exceptions import ParseError
 from lib.parser import Parser, ParserContext
 from lib.tasks.calculator import calculate_column, calculate_updates
@@ -17,7 +17,7 @@ class Calculation(AbstractModel):
     NAME = 'name'
     QUERY = 'query'
 
-    def save(self, dataset, formula, name, group=None, query=None):
+    def save(self, dataset, formula, name, group=None):
         """
         Attempt to parse formula, then save formula, and add a task to
         calculate formula.
@@ -45,15 +45,14 @@ class Calculation(AbstractModel):
             self.FORMULA: formula,
             self.GROUP: group,
             self.NAME: name,
-            self.QUERY: query,
         }
         self.collection.insert(record, safe=True)
 
-        dataset.clear_summary_stats(ALL)
+        dataset.clear_summary_stats()
 
         # call remote calculate and pass calculation id
         calculate_column.delay(self.parser, dataset, dframe, formula, name,
-                               group, query)
+                               group)
 
         self.record = record
         return self.record

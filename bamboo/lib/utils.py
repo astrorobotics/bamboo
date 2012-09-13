@@ -25,7 +25,7 @@ def get_json_value(value):
 
 def series_to_jsondict(series):
     return series if series is None else dict([
-        (str(key), get_json_value(value))
+        (unicode(key), get_json_value(value))
         for key, value in series.iteritems()
     ])
 
@@ -77,6 +77,8 @@ def recognize_dates(dframe):
         if dtype.type == np.object_:
             try:
                 column = dframe.columns[idx]
+                if is_float_nan(dframe[column][0]):
+                    raise ValueError
                 # attempt to parse first entry as a date
                 date_parse(dframe[column][0])
                 # it is parseable as a date, convert column to date
