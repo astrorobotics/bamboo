@@ -1,15 +1,13 @@
 from pandas import DataFrame, Series
 
-from lib.constants import LINKED_DATASETS
-from models.dataset import Dataset
+from lib.aggregations import Aggregation, AGGREGATIONS
+from lib.utils import split_groups
 from models.observation import Observation
 
 
 class Aggregator(object):
 
-    GROUP_DELIMITER = ','
-
-    def __init__(self, dataset, dframe, column, group_str, aggregation, name):
+    def __init__(self, dataset, dframe, column, group_str, _type, name):
         """
         Apply the *aggregation* to group columns in *group_str* and the *column
         of the *dframe*.
@@ -17,44 +15,55 @@ class Aggregator(object):
         If a linked dataset with the same groups already exists update this
         dataset.  Otherwise create a new linked dataset.
         """
+        self.dataset = dataset
+        self.dframe = dframe
         self.column = column
-
-        if group_str:
-            # groupby on dframe then run aggregation on groupby obj
-            groups = group_str.split(self.GROUP_DELIMITER)
-            self.new_dframe = dframe[groups].join(column).\
-                groupby(groups, as_index=False).agg(aggregation)
-        else:
-            result = self.function_map(aggregation)
-            self.new_dframe = DataFrame({name: Series([result])})
-            group_str = ''
-
-        linked_datasets = dataset.linked_datasets
-
         # MongoDB does not allow None as a key
-        agg_dataset_id = linked_datasets.get(group_str, None)
+        self.group_str = group_str if group_str else ''
+        self.groups = split_groups(self.group_str) if group_str else None
+        self.name = name
+        self._type = _type
 
-        if agg_dataset_id is None:
-            agg_dataset = Dataset()
+    def save_aggregation(self):
+        new_dframe = self.eval_dframe()
+
+        linked_datasets = self.dataset.linked_datasets
+        agg_dataset = linked_datasets.get(self.group_str, None)
+
+        if agg_dataset is None:
+            agg_dataset = self.dataset.__class__()
             agg_dataset.save()
 
-            Observation().save(self.new_dframe, agg_dataset)
+            Observation().save(new_dframe, agg_dataset)
 
             # store a link to the new dataset
-            linked_datasets[group_str] = agg_dataset.dataset_id
-            dataset.update({LINKED_DATASETS: linked_datasets})
+            linked_datasets_dict = self.dataset.linked_datasets_dict
+            linked_datasets_dict[self.group_str] = agg_dataset.dataset_id
+            self.dataset.update({
+                self.dataset.__class__.LINKED_DATASETS: linked_datasets_dict})
         else:
-            agg_dataset = Dataset.find_one(agg_dataset_id)
             agg_dframe = Observation.find(agg_dataset, as_df=True)
 
-            # attach new column to aggregation data frame
-            self.new_dframe = agg_dframe.join(self.new_dframe[name])
-            Observation.update(self.new_dframe, agg_dataset)
+            if self.groups:
+                # set indexes on new dataframes to merge correctly
+                new_dframe = new_dframe.set_index(self.groups)
+                agg_dframe = agg_dframe.set_index(self.groups)
 
-    def function_map(self, function):
-        return {
-            'sum': self.sum_dframe,
-        }[function]()
+            # attach new column to aggregation data frame and remove index
+            new_dframe = agg_dframe.join(new_dframe)
 
-    def sum_dframe(self):
-        return float(self.column.sum())
+            if self.groups:
+                new_dframe = new_dframe.reset_index()
+
+            Observation.update(new_dframe, agg_dataset)
+        self.new_dframe = new_dframe
+
+    def eval_dframe(self):
+        aggregation = AGGREGATIONS.get(self._type)
+
+        if self.group_str:
+            # groupby on dframe then run aggregation on groupby obj
+            return aggregation.group_aggregation(self.dframe, self.groups,
+                                                 self.column)
+        else:
+            return aggregation.column_aggregation(self.column, self.name)

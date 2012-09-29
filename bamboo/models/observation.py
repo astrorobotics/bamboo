@@ -1,12 +1,14 @@
+from datetime import datetime
 import json
 
 from bson import json_util
 
 from config.db import Database
-from lib.constants import DATASET_OBSERVATION_ID, DB_BATCH_SIZE, NUM_COLUMNS,\
-    NUM_ROWS, SCHEMA
+from lib.constants import DATASET_OBSERVATION_ID, DATETIME, DB_BATCH_SIZE,\
+    NUM_COLUMNS, NUM_ROWS, SCHEMA, SIMPLETYPE
 from lib.exceptions import JSONError
 from lib.mongo import mongo_to_df
+from lib.utils import call_async
 from models.abstract_model import AbstractModel
 
 
@@ -15,25 +17,38 @@ class Observation(AbstractModel):
     __collectionname__ = 'observations'
 
     @classmethod
-    def delete_all(cls, dataset):
+    def delete_all(cls, dataset, query={}):
         """
         Delete the observations for *dataset*.
         """
-        cls.collection.remove({
+        query.update({
             DATASET_OBSERVATION_ID: dataset.dataset_observation_id
-        }, safe=True)
+        })
+        cls.collection.remove(query, safe=True)
 
     @classmethod
-    def find(cls, dataset, query='{}', select=None, as_df=False):
+    def find(cls, dataset, query=None, select=None, as_df=False):
         """
         Try to parse query if exists, then get all rows for ID matching query,
         or if no query all.  Decode rows from mongo and return.
         """
-        if query:
-            try:
-                query = json.loads(query, object_hook=json_util.object_hook)
-            except ValueError, e:
-                raise JSONError('cannot decode query: %s' % e.__str__())
+        try:
+            query = (query and json.loads(
+                query, object_hook=json_util.object_hook)) or {}
+
+            if query != {}:
+                # interpret date column queries as JSON
+                datetime_columns = [
+                    column for (column, schema) in
+                    dataset.data_schema.items() if
+                    schema[SIMPLETYPE] == DATETIME and column in query.keys()]
+                for date_column in datetime_columns:
+                    query[date_column] = dict([(
+                        key,
+                        datetime.fromtimestamp(int(value))) for (key, value) in
+                        query[date_column].items()])
+        except ValueError, e:
+            raise JSONError('cannot decode query: %s' % e.__str__())
 
         if select:
             try:
@@ -55,7 +70,7 @@ class Observation(AbstractModel):
         """
         # build schema for the dataset after having read it from file.
         if not SCHEMA in dataset.record:
-            dataset.build_schema(dframe, dframe.dtypes)
+            dataset.build_schema(dframe)
 
         # add metadata to dataset
         dataset.update({
@@ -85,7 +100,7 @@ class Observation(AbstractModel):
         if len(rows):
             self.collection.insert(rows, safe=True)
 
-        dataset.summarize.delay(dataset)
+        call_async(dataset.summarize, dataset)
 
     @classmethod
     def update(cls, dframe, dataset):
@@ -93,11 +108,7 @@ class Observation(AbstractModel):
         Update *dataset* by overwriting all observations with the given
         *dframe*.
         """
-        previous_dtypes = cls.find(dataset, as_df=True).dtypes.to_dict()
-        new_dtypes = dframe.dtypes.to_dict().items()
-        cols_to_add = dict([(name, dtype) for name, dtype in
-                            new_dtypes if name not in previous_dtypes])
-        dataset.update_schema(dframe, cols_to_add)
+        dataset.build_schema(dframe)
         cls.delete_all(dataset)
         cls().save(dframe, dataset)
         return cls.find(dataset, as_df=True)

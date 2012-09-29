@@ -16,7 +16,7 @@ per district) from datasets. These are updated as new data is received.
 Dependencies
 ------------
 
-* python
+* python (tested on version 2.7)
 * mongodb
 
 for numpy, pandas, and scipy (in requirements.pip):
@@ -28,51 +28,58 @@ on Debian based: ``# apt-get install gfortran libatlas-base-dev``
 
 Installation
 ------------
-    
-    ``$ ./scripts/install.sh``
+
+::
+
+  $ ./scripts/install.sh
 
 Running the server
 ------------------
 
-    start mongodb on localhost and standard port
+start mongodb on localhost and standard port
 
 ::
 
-    $ cd bamboo
-    $ python run_server.py
+  $ cd bamboo
+  $ python run_server.py
 
 Running the server as a daemon
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-------------------------------
+start mongodb on localhost and standard port
 
-    start mongodb on localhost and standard port
+1. create a user named 'bamboo', with home directory ``/home/bamboo``
+2. create a virtualenv using virtualenvwrapper called 'bamboo'
+3. place the bamboo root directory in ``/var/www/bamboo/current``
 
-    1. create a user named 'bamboo', with home directory ``/home/bamboo``
-    2. create a virtualenv using virtualenvwrapper called 'bamboo'
-    3. place the bamboo root directory in ``/var/www/bamboo/current``
+start the daemon using:
 
-    start the daemon using:
+::
 
-    ``$ /var/www/bamboo/current/scripts/bamboo.sh start``
+  $ /var/www/bamboo/current/scripts/bamboo.sh start
 
-    stop the daemon using:
+stop the daemon using:
 
-    ``$ /var/www/bamboo/current/scripts/bamboo.sh stop``
+::
+
+  $ /var/www/bamboo/current/scripts/bamboo.sh stop
 
 
 Testing
 -------
 
-    install nose testing requirements
-    
-    ``$ pip install -r requirements-test.pip``
-
-    run tests
+install nose testing requirements
 
 ::
 
-    $ cd bamboo
-    $ ./test.sh
+  $ pip install -r requirements-test.pip
+
+run tests
+
+::
+
+  $ cd bamboo
+  $ ./test.sh
 
 Documentation
 -------------
@@ -80,16 +87,16 @@ Documentation
 Viewing Documentation
 ^^^^^^^^^^^^^^^^^^^^^
 
-    The latest docs are available at http://bamboo.io/
+The latest docs are available at http://bamboo.io/
     
 Building Documentation
 ^^^^^^^^^^^^^^^^^^^^^^
 
 ::
 
-    $ pip install -r requirements-docs.pip
-    $ cd docs
-    $ make html
+  $ pip install -r requirements-docs.pip
+  $ cd docs
+  $ make html
 
 Contributing Code
 -----------------
@@ -101,13 +108,16 @@ To work on the code:
 3. add the code for your new feature
 4. ensure it is pep8
 
-    ``$ pip install pep8``
-    
-    ``$ pep8 bamboo``
+::
+
+  $ pip install pep8
+  $ pep8 bamboo
 
 5. ensure all existing tests and your new tests are passing
 
-    ``$ cd bamboo && ./test.sh``
+::
+
+  $ cd bamboo && ./test.sh
 
 6. submit a pull request
 
@@ -117,23 +127,53 @@ Example Usage
 On the remote server
 ^^^^^^^^^^^^^^^^^^^^
 
-    running the example basic commands
+running the example basic commands
 
-    ``$ ./scripts/commands.sh``
+::
 
-    posting a dataset
+  $ ./scripts/commands.sh
 
-    ``$ curl -X POST -d "url=http://formhub.org/mberg/forms/good_eats/data.csv" http://bamboo.io/datasets``
+using `pybamboo <https://github.com/modilabs/pybamboo>`_
+
+::
+
+  $ pip install pybamboo
+  $ python
+  >>> from pybamboo import PyBamboo
+  >>> pybamboo = PyBamboo()
+  >>> response = pybamboo.store_csv_file('http://formhub.org/mberg/forms/good_eats/data.csv')
+  >>> dataset_id = response['id']
+ ...
+
+posting a dataset
+
+::
+
+  $ curl -X POST -d "url=http://formhub.org/mberg/forms/good_eats/data.csv" http://bamboo.io/datasets
 
 On your local server
 ^^^^^^^^^^^^^^^^^^^
 
-    start the bamboo server as above, then
+start the bamboo server as above, then
 
-    run the example basic commands
+run the example basic commands
 
-    ``$ ./scripts/commands.sh -l``
+::
 
-    make requests from your local server
+  $ ./scripts/commands.sh -l
 
-    ``$ curl -X POST -d "url=http://formhub.org/mberg/forms/good_eats/data.csv" http://localhost:8080/datasets``
+make requests from your local server
+
+::
+
+  $ curl -X POST -d "url=http://formhub.org/mberg/forms/good_eats/data.csv" http://localhost:8080/datasets
+
+About
+-----
+Bamboo is an open source project. The project features, in chronological order,
+the combined efforts of
+
+* Peter Lubell-Doughtie
+* Mark Johnston
+
+and other developers.

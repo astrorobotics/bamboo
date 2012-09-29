@@ -3,8 +3,8 @@ import pickle
 
 import numpy as np
 
-from lib.aggregator import Aggregator
 from lib.constants import SCHEMA
+from lib.utils import GROUP_DELIMITER
 from models.dataset import Dataset
 from models.observation import Observation
 from test_calculator import TestCalculator
@@ -13,8 +13,17 @@ from test_calculator import TestCalculator
 class TestAggregations(TestCalculator):
 
     AGGREGATION_RESULTS = {
-        'amount': 2007.5,
-        'gps_latitude': 624.089497667,
+        'max(amount)': 1600,
+        'mean(amount)': 105.65789473684211,
+        'median(amount)': 12,
+        'min(amount)': 2.0,
+        'sum(amount)': 2007.5,
+        'sum(gps_latitude)': 624.089497667,
+        'ratio(amount, gps_latitude)': 3.184639,
+        'sum(risk_factor in ["low_risk"])': 18,
+        'ratio(risk_factor in ["low_risk"], risk_factor in ["low_risk",'
+        ' "medium_risk"])': 18.0 / 19,
+        'ratio(risk_factor in ["low_risk"], 1)': 18.0 / 19,
     }
 
     GROUP_TO_RESULTS = {
@@ -29,42 +38,62 @@ class TestAggregations(TestCalculator):
 
     def setUp(self):
         TestCalculator.setUp(self)
-        self.calculations_to_columns = {
-            'sum(amount)': 'amount',
-            'sum(gps_latitude)': 'gps_latitude',
-        }
-        self.calculations = self.calculations_to_columns.keys()
+        self.calculations = [
+            'max(amount)',
+            'mean(amount)',
+            'median(amount)',
+            'min(amount)',
+            'sum(amount)',
+            'sum(gps_latitude)',
+            'ratio(amount, gps_latitude)',
+            'sum(risk_factor in ["low_risk"])',
+            'ratio(risk_factor in ["low_risk"], risk_factor in ["low_risk",'
+            ' "medium_risk"])',
+            'ratio(risk_factor in ["low_risk"], 1)',
+        ]
         self.expected_length = defaultdict(int)
         self.groups_list = None
 
+    def _offset_for_ratio(self, formula, _int):
+        if formula[0:5] == 'ratio':
+            _int += 2
+        return _int
+
+    def _get_initial_len(self, formula, groups_list):
+        initial_len = 0 if self.group == '' else len(groups_list)
+        return self._offset_for_ratio(formula, initial_len)
+
+    def _columns_per_aggregation(self, formula):
+        initial_len = 1
+        return self._offset_for_ratio(formula, initial_len)
+
     def _calculations_to_results(self, formula, row):
-        name = self.calculations_to_columns[formula]
         if self.group:
-            res = self.GROUP_TO_RESULTS[self.group][name]
+            res = self.GROUP_TO_RESULTS[self.group][formula]
             column = row[self.groups_list[0]] if len(self.groups_list) <= 1\
                 else tuple([row[group] for group in self.groups_list])
             res = res[column]
             return res
         else:
-            return self.AGGREGATION_RESULTS[name]
+            return self.AGGREGATION_RESULTS[formula]
 
     def _test_calculation_results(self, name, formula):
         if self.group:
-            self.groups_list = self.group.split(Aggregator.GROUP_DELIMITER)
+            self.groups_list = self.group.split(GROUP_DELIMITER)
         else:
             self.group = ''
 
-        linked_dataset_id = self.dataset.linked_datasets[self.group]
-
-        if not (self.group in self.expected_length or self.group == ''):
-            self.expected_length[self.group] = len(self.groups_list)
+        if not self.group in self.expected_length:
+            self.expected_length[self.group] = self._get_initial_len(
+                formula, self.groups_list)
 
         # add an extra column for the group names
-        self.expected_length[self.group] += 1
+        self.expected_length[self.group] += self._columns_per_aggregation(
+            formula)
 
         # retrieve linked dataset
-        self.assertFalse(linked_dataset_id is None)
-        linked_dataset = Dataset.find_one(linked_dataset_id)
+        linked_dataset = self.dataset.linked_datasets[self.group]
+        self.assertFalse(linked_dataset is None)
         linked_dframe = Observation.find(linked_dataset, as_df=True)
 
         column_labels_to_slugs = linked_dataset.build_labels_to_slugs()

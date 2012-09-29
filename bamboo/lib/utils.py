@@ -1,14 +1,25 @@
-from datetime import datetime
-import json
+import simplejson as json
 from math import isnan
 import re
 from calendar import timegm
 
 from dateutil.parser import parse as date_parse
 import numpy as np
+from pandas import Series
 
-from constants import ERROR, JSON_NULL, LABEL, MONGO_RESERVED_KEYS,\
-    MONGO_RESERVED_KEY_PREFIX
+from constants import DATETIME, ERROR, MONGO_RESERVED_KEYS,\
+    MONGO_RESERVED_KEY_PREFIX, SIMPLETYPE
+from config.settings import ASYNCHRONOUS_TASKS
+
+"""
+Constants for utils
+"""
+
+# JSON encoding string
+JSON_NULL = 'null'
+
+# delimiter when passing multiple groups as a string
+GROUP_DELIMITER = ','
 
 
 def is_float_nan(num):
@@ -17,9 +28,11 @@ def is_float_nan(num):
 
 def get_json_value(value):
     if is_float_nan(value):
-        return JSON_NULL
-    if isinstance(value, np.int64):
-        return int(value)
+        value = JSON_NULL
+    elif isinstance(value, np.int64):
+        value = int(value)
+    elif isinstance(value, np.bool_):
+        value = bool(value)
     return value
 
 
@@ -40,11 +53,11 @@ def dump_or_error(data, error_message):
     return json.dumps(data)
 
 
-def prefix_reserved_key(key):
+def prefix_reserved_key(key, prefix=MONGO_RESERVED_KEY_PREFIX):
     """
     Prefix reserved key
     """
-    return '%s%s' % (MONGO_RESERVED_KEY_PREFIX, key)
+    return '%s%s' % (prefix, key)
 
 
 def slugify_columns(column_names):
@@ -77,21 +90,25 @@ def recognize_dates(dframe):
         if dtype.type == np.object_:
             try:
                 column = dframe.columns[idx]
-                if is_float_nan(dframe[column][0]):
-                    raise ValueError
-                # attempt to parse first entry as a date
-                date_parse(dframe[column][0])
-                # it is parseable as a date, convert column to date
-                dframe[column] = dframe[column].map(date_parse)
+                new_column = Series([
+                    field if is_float_nan(field) else date_parse(field) for
+                    field in dframe[column].tolist()])
+                dframe[column] = new_column
             except ValueError:
                 # it is not a correctly formatted date
+                pass
+            except OverflowError:
+                # it is a number that is too large to be a date
                 pass
     return dframe
 
 
-def type_for_data_and_dtypes(type_map, column, dtype_type):
-    field_type = type(column[0])
-    return type_map[field_type if field_type == datetime else dtype_type]
+def recognize_dates_from_schema(dataset, dframe):
+    # if it is a date column, recognize dates
+    for column, column_schema in dataset.data_schema.items():
+        if dframe.get(column) and column_schema[SIMPLETYPE] == DATETIME:
+            dframe[column] = dframe[column].map(date_parse)
+    return dframe
 
 
 def parse_str_to_unix_time(value):
@@ -105,3 +122,14 @@ def parse_date_to_unix_time(date):
 def reserve_encoded(string):
     return prefix_reserved_key(string) if string in MONGO_RESERVED_KEYS else\
         string
+
+
+def split_groups(group_str):
+    return group_str.split(GROUP_DELIMITER)
+
+
+def call_async(function, *args, **kwargs):
+    if ASYNCHRONOUS_TASKS:
+        function.__getattribute__('delay')(*args, **kwargs)
+    else:
+        function(*args, **kwargs)

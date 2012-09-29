@@ -1,8 +1,7 @@
 from tests.test_base import TestBase
 
-from lib.constants import LABEL
 from lib.parser import Parser
-from lib.tasks.calculator import calculate_column
+from lib.tasks.calculator import Calculator
 from lib.utils import recognize_dates
 from models.dataset import Dataset
 from models.observation import Observation
@@ -36,7 +35,7 @@ class TestCalculator(TestBase):
         self.added_num_cols = 0
 
         column_labels_to_slugs = dict([
-            (column_attrs[LABEL], (column_name)) for
+            (column_attrs[Dataset.LABEL], (column_name)) for
             (column_name, column_attrs) in self.dataset.data_schema.items()])
         self.label_list, self.slugified_key_list = [
             list(ary) for ary in zip(*column_labels_to_slugs.items())
@@ -46,16 +45,17 @@ class TestCalculator(TestBase):
             name = 'test-%s' % idx
             self.parser.validate_formula(formula, row)
 
+            calculator = Calculator(self.dataset)
+
             if delay:
-                task = calculate_column.delay(self.parser, self.dataset,
-                                              self.dframe, formula, name,
-                                              self.group)
+                task = calculator.calculate_column.delay(
+                    calculator, formula, name, self.group)
                 # test that task has completed
                 self.assertTrue(task.ready())
                 self.assertTrue(task.successful())
             else:
-                task = calculate_column(self.parser, self.dataset, self.dframe,
-                                        formula, name, self.group)
+                task = calculator.calculate_column(
+                    calculator, formula, name, self.group)
 
             self.column_labels_to_slugs = self.dataset.build_labels_to_slugs()
 

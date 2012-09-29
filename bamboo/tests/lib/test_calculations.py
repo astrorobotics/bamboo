@@ -1,6 +1,6 @@
 import numpy as np
 
-from lib.constants import LABEL, SCHEMA, SIMPLETYPE
+from lib.constants import SCHEMA, SIMPLETYPE
 from lib.tasks.import_dataset import import_dataset
 from models.dataset import Dataset
 from models.observation import Observation
@@ -29,18 +29,18 @@ class TestCalculations(TestCalculator):
             # precedence
             '(amount + gps_alt) * gps_precision',
             # comparison
-            'amount = 2',
+            'amount == 2',
             '10 < amount',
             '10 < amount + gps_alt',
             # logical
-            'not amount = 2',
-            'not(amount = 2)',
-            'amount = 2 and 10 < amount',
-            'amount = 2 or 10 < amount',
-            'not not amount = 2 or 10 < amount',
-            'not amount = 2 or 10 < amount',
-            '(not amount = 2) or 10 < amount',
-            'not(amount = 2 or 10 < amount)',
+            'not amount == 2',
+            'not(amount == 2)',
+            'amount == 2 and 10 < amount',
+            'amount == 2 or 10 < amount',
+            'not not amount == 2 or 10 < amount',
+            'not amount == 2 or 10 < amount',
+            '(not amount == 2) or 10 < amount',
+            'not(amount == 2 or 10 < amount)',
             'amount ^ 3',
             '(amount + gps_alt) ^ 2 + 100',
             '-amount',
@@ -85,7 +85,7 @@ class TestCalculations(TestCalculator):
 
             # test column labels
             self.label_list.append(unslug_name)
-            labels = [schema[col][LABEL] for col in schema.keys()]
+            labels = [schema[col][Dataset.LABEL] for col in schema.keys()]
             self.assertEqual(sorted(labels), sorted(self.label_list))
 
             # test result of calculation

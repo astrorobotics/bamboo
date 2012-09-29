@@ -35,13 +35,13 @@ echo $RET
 
 echo -e "\nCalculate summary statistics for School Zone RWIKA"
 # using slug for "School Zone", which is "school_zone"
-RET=$(curl -#g $HOST/datasets/$ID/summary?query='{"school_zone":"RWIKA"}')
+RET=$(curl -#g $HOST/datasets/$ID/summary?query='{"school_zone":"RWIKA"}'\&select=all)
 echo $RET
 
 echo -e "\nCalculate summary statistics with a grouping (truncated to 1000 characters)"
 echo -e "Group by District showing only PRIVATE schools"
 # using slug for "Public or Private", which is "public_or_private"
-RET=$(curl -#g $HOST/datasets/$ID/summary?query='{"public_or_private":"PRIVATE"}'\&group=district)
+RET=$(curl -#g $HOST/datasets/$ID/summary?query='{"public_or_private":"PRIVATE"}'\&select=all\&group=district)
 echo $RET | cut -c -1000
 
 echo -e "\nStore calculation named small_schools with formula acreage<10"
@@ -63,7 +63,7 @@ RET=$(curl -#g $HOST/datasets/$ID/summary?select='{"male_female_teacher_ratio":1
 echo $RET | cut -c -2000
 
 echo -e "\nRetrieve new calculated column male_female_teacher_ratio summary grouped by province (truncated to 2000 characters)"
-RET=$(curl -#g $HOST/datasets/$ID?group=province&select='{"male_female_teacher_ratio":1}')
+RET=$(curl -#g $HOST/datasets/$ID/summary?select='{"male_female_teacher_ratio":1}'&group=province)
 echo $RET | cut -c -2000
 
 echo -e "\nStore aggregation sum(tsc_male_teachers)"
