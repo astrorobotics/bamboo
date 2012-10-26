@@ -6,7 +6,13 @@ before_install:
 install:
   - pip install numpy --use-mirrors
   - pip install -r requirements.pip --use-mirrors
-script: cd bamboo && nosetests
+  - pip install -r requirements-test.pip --use-mirrors
+script:
+  - ./celeryd/celeryd start
+  - cd bamboo
+  - nosetests
+  - cd ..
+  - ./celeryd/celeryd stop
 services:
   - mongodb
 notifications:

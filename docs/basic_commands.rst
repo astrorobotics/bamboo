@@ -5,6 +5,8 @@ Note: on the command line some special characters may need to be escaped for
 the commands to function correctly.  E.g. ``&`` as ``\&``, ``?`` as ``\?``,
 ``=`` as ``\=``.
 
+Note: [*SIC*] all spelling errors in the example dataset.
+
 Check the Bamboo version
 ------------------------
 
@@ -443,7 +445,7 @@ returns::
     }
 
 
-Calculation formulas:
+Calculation formulas
 ---------------------
 
 Calculations are specified by a *name*, which is the label and a *formula*,
@@ -532,7 +534,7 @@ returns::
     }
 
 store aggregation formula with multi-group:
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``curl -X POST -d "name=sum_of_amount&formula=sum(amount)&group=food_type,rating" http://bamboo.io/calculations/8a3d74711475d8a51c84484fe73f24bd151242ea``
 
@@ -547,7 +549,7 @@ returns::
 retrieve lists of related datasets for aggregations:
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-``curl -g http://bamboo.io/datasets/8a3d74711475d8a51c84484fe73f24bd151242ea?mode=related``
+``curl -g http://bamboo.io/datasets/8a3d74711475d8a51c84484fe73f24bd151242ea/related``
 
 Returns a map of groups (included an empty group) to dataset IDs for
 aggregation calculations.
@@ -631,3 +633,44 @@ returns::
             "sum_of_amount": 4.0
         }
     ]
+
+Updating your data
+------------------
+
+You can add single or multiple row updates to a dataset via JSON data in a PUT
+request to the dataset id. The row(s) should be key-value pairs where the key
+is the column name. In the example that we have been using here, the dataset
+could be updated with a JSON dictionary like this:
+
+::
+
+    {
+        "rating": "delectible",
+        "amount": 2,
+        "food_type": "streat_sweets"
+    }
+
+N/A values will be added when the dictionary does not supply a value for a
+given column.
+
+
+``curl -X PUT -H "Accept: application/json" -H "Content-type: application/json" -d '{"rating":"delectible","amount":2,"food_type":"streat_sweets"}' http://bamboo.io/datasets/8a3d74711475d8a51c84484fe73f24bd151242ea``
+
+returns::
+
+    {"id": "8a3d74711475d8a51c84484fe73f24bd151242ea"}
+
+Merging multiple datasets
+-------------------------
+
+To row-wise merge 2 or more datasets into a new dataset use the _merge_ command
+. For example, to merge two datasets with IDs 8123 and 9123, use the following
+command. This will return the ID of the new merged dataset.  The merge occurs
+in the background.  When the dataset status is set to "ready" you can be sure
+the data has been merged.
+
+``curl -X POST -d "datasets=[8123, 9123]" http://bamboo.io/datasets/merge``
+
+returns::
+
+    {"id": "8a3d74711475d8a51c84484fe73f24bd151242ea"}

@@ -1,73 +1,61 @@
 import os
-import re
 import tempfile
-import urllib2
 
-from lib.constants import ERROR, ID
-from lib.tasks.import_dataset import import_dataset
-from models.dataset import Dataset
+from celery.task import task
+from pandas import read_csv
+
+from bamboo.core.frame import DATASET_ID
+from bamboo.lib.datetools import recognize_dates
+from bamboo.lib.utils import call_async
+from bamboo.models.dataset import Dataset
 
 
-def open_data_file(url, allow_local_file=False):
+@task
+def import_dataset(dataset, dframe=None, filepath_or_buffer=None,
+                   delete=False):
     """
-    Handle url and file handles
+    For reading a URL and saving the corresponding dataset.
     """
-    open_url = lambda d: urllib2.urlopen(d['url'])
-    protocols = {
-        'http':  open_url,
-        'https': open_url,
-    }
-    if allow_local_file:
-        protocols.update({'file': lambda d: d['path']})
-
-    regex = re.compile(
-        '^(?P<url>(?P<protocol>%s):\/\/(?P<path>.+))$'
-        % '|'.join(protocols.keys())
-    )
-    match = re.match(regex, url)
-    if match:
-        args = match.groupdict()
-        return protocols[args['protocol']](args)
-    return None
+    if filepath_or_buffer:
+        dframe = recognize_dates(read_csv(filepath_or_buffer))
+    if delete:
+        os.unlink(filepath_or_buffer)
+    dataset.save_observations(dframe)
 
 
 def create_dataset_from_url(url, allow_local_file=False):
     """
     Load a URL, read from a CSV, create a dataset and return the unique ID.
+
+    Raises an IOError for a bad file or a ConnectionError for a bad URL.
     """
-    _file = None
-
-    try:
-        _file = open_data_file(url, allow_local_file)
-    except (IOError, urllib2.HTTPError):
-        # error reading file/url, return
-        pass
-
-    if not _file:
-        # could not get a file handle
-        return {ERROR: 'could not get a filehandle for: %s' % url}
+    if not allow_local_file and isinstance(url, basestring)\
+            and url[0:4] == 'file':
+        raise IOError
 
     dataset = Dataset()
     dataset.save()
-    import_dataset(dataset, _file=_file)
+    call_async(import_dataset, dataset, filepath_or_buffer=url)
 
-    return {ID: dataset.dataset_id}
+    return dataset
 
 
 def create_dataset_from_csv(csv_file):
     """
     Create a dataset from the uploaded .csv file.
     """
-    dataset = Dataset()
-    dataset.save()
-
     # need to write out to a named tempfile in order
     # to get a handle for pandas *read_csv* function
     tmpfile = tempfile.NamedTemporaryFile(delete=False)
     tmpfile.write(csv_file.file.read())
+
     # pandas needs a closed file for *read_csv*
     tmpfile.close()
-    import_dataset(dataset, _file=tmpfile.name)
-    os.unlink(tmpfile.name)
 
-    return {ID: dataset.dataset_id}
+    dataset = Dataset()
+    dataset.save()
+
+    call_async(import_dataset, dataset, filepath_or_buffer=tmpfile.name,
+               delete=True)
+
+    return dataset

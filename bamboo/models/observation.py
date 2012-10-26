@@ -1,15 +1,13 @@
-from datetime import datetime
 import json
 
 from bson import json_util
+from pandas import Series
 
-from config.db import Database
-from lib.constants import DATASET_OBSERVATION_ID, DATETIME, DB_BATCH_SIZE,\
-    NUM_COLUMNS, NUM_ROWS, SCHEMA, SIMPLETYPE
-from lib.exceptions import JSONError
-from lib.mongo import mongo_to_df
-from lib.utils import call_async
-from models.abstract_model import AbstractModel
+from bamboo.core.frame import DATASET_OBSERVATION_ID
+from bamboo.lib.datetools import parse_timestamp_query
+from bamboo.lib.jsontools import JSONError
+from bamboo.lib.utils import call_async
+from bamboo.models.abstract_model import AbstractModel
 
 
 class Observation(AbstractModel):
@@ -27,26 +25,23 @@ class Observation(AbstractModel):
         cls.collection.remove(query, safe=True)
 
     @classmethod
-    def find(cls, dataset, query=None, select=None, as_df=False):
+    def find(cls, dataset, query=None, select=None, limit=0, order_by=None):
         """
         Try to parse query if exists, then get all rows for ID matching query,
         or if no query all.  Decode rows from mongo and return.
+
+        order_by: sort resulting rows according to a column value (ASC or DESC)
+            Examples:   order_by='mycolumn'
+                        order_by='-mycolumn'
+
+        limit: apply a limit on the number of rows returned.
+            limit is applied AFTER ordering.
         """
         try:
             query = (query and json.loads(
                 query, object_hook=json_util.object_hook)) or {}
 
-            if query != {}:
-                # interpret date column queries as JSON
-                datetime_columns = [
-                    column for (column, schema) in
-                    dataset.data_schema.items() if
-                    schema[SIMPLETYPE] == DATETIME and column in query.keys()]
-                for date_column in datetime_columns:
-                    query[date_column] = dict([(
-                        key,
-                        datetime.fromtimestamp(int(value))) for (key, value) in
-                        query[date_column].items()])
+            query = parse_timestamp_query(query, dataset.schema)
         except ValueError, e:
             raise JSONError('cannot decode query: %s' % e.__str__())
 
@@ -57,11 +52,8 @@ class Observation(AbstractModel):
                 raise JSONError('cannot decode select: %s' % e.__str__())
 
         query[DATASET_OBSERVATION_ID] = dataset.dataset_observation_id
-        rows = super(cls, cls).find(query, select, as_dict=True)
-
-        if as_df:
-            return mongo_to_df(rows)
-        return rows
+        return super(cls, cls).find(query, select, as_dict=True,
+                                    limit=limit, order_by=order_by)
 
     def save(self, dframe, dataset):
         """
@@ -69,46 +61,29 @@ class Observation(AbstractModel):
         *dataset*, insert in chuncks of size *DB_BATCH_SIZE*.
         """
         # build schema for the dataset after having read it from file.
-        if not SCHEMA in dataset.record:
+        if not dataset.SCHEMA in dataset.record:
             dataset.build_schema(dframe)
-
-        # add metadata to dataset
-        dataset.update({
-            NUM_COLUMNS: len(dframe.columns),
-            NUM_ROWS: len(dframe),
-        })
-
-        dataset_observation_id = dataset.dataset_observation_id
-        rows = []
 
         labels_to_slugs = dataset.build_labels_to_slugs()
 
         # if column name is not in map assume it is already slugified
         # (i.e. NOT a label)
-        dframe.columns = [labels_to_slugs.get(column, column) for column in
-                          dframe.columns.tolist()]
+        columns = dframe.columns = [
+            labels_to_slugs.get(column, column) for column in
+            dframe.columns.tolist()]
 
-        for row_index, row in dframe.iterrows():
-            row = row.to_dict()
-            row[DATASET_OBSERVATION_ID] = dataset_observation_id
-            rows.append(row)
-            if len(rows) > DB_BATCH_SIZE:
-                # insert data into collection
-                self.collection.insert(rows, safe=True)
-                rows = []
+        id_column = Series([dataset.dataset_observation_id] * len(dframe))
+        id_column.name = DATASET_OBSERVATION_ID
+        dframe = dframe.join(id_column)
 
-        if len(rows):
-            self.collection.insert(rows, safe=True)
+        rows = [row.to_dict() for (_, row) in dframe.iterrows()]
+        self.batch_save(rows)
+
+        # add metadata to dataset
+        dataset.update({
+            dataset.NUM_COLUMNS: len(columns),
+            dataset.NUM_ROWS: len(dframe),
+            dataset.STATE: self.STATE_READY,
+        })
 
         call_async(dataset.summarize, dataset)
-
-    @classmethod
-    def update(cls, dframe, dataset):
-        """
-        Update *dataset* by overwriting all observations with the given
-        *dframe*.
-        """
-        dataset.build_schema(dframe)
-        cls.delete_all(dataset)
-        cls().save(dframe, dataset)
-        return cls.find(dataset, as_df=True)

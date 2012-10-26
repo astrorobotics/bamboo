@@ -1,13 +1,15 @@
+from datetime import datetime
 import re
 
 from pandas import DataFrame
 from pymongo.cursor import Cursor
 
-from tests.test_base import TestBase
-from models.dataset import Dataset
-from models.observation import Observation
-from lib.constants import MONGO_RESERVED_KEY_STRS, SCHEMA, SIMPLETYPE
-from lib.mongo import mongo_decode_keys
+from bamboo.tests.test_base import TestBase
+from bamboo.models.dataset import Dataset
+from bamboo.models.observation import Observation
+from bamboo.lib.datetools import recognize_dates
+from bamboo.lib.mongo import MONGO_RESERVED_KEY_STRS
+from bamboo.lib.schema_builder import OLAP_TYPE, SIMPLETYPE
 
 
 class TestDataset(TestBase):
@@ -37,7 +39,7 @@ class TestDataset(TestBase):
             record.save(self.test_dataset_ids[dataset_name])
             records = Dataset.find(self.test_dataset_ids[dataset_name])
             self.assertNotEqual(records, [])
-            record.delete(record)
+            record.delete()
             records = Dataset.find(self.test_dataset_ids[dataset_name])
             self.assertEqual(records, [])
 
@@ -62,13 +64,14 @@ class TestDataset(TestBase):
             # get dataset with new schema
             dataset = Dataset.find_one(self.test_dataset_ids[dataset_name])
 
-            for key in [Dataset.CREATED_AT, SCHEMA, Dataset.UPDATED_AT]:
+            for key in [
+                    Dataset.CREATED_AT, Dataset.SCHEMA, Dataset.UPDATED_AT]:
                 self.assertTrue(key in dataset.record.keys())
 
             df_columns = self.test_data[dataset_name].columns.tolist()
             seen_columns = []
 
-            for column_name, column_attributes in dataset.data_schema.items():
+            for column_name, column_attributes in dataset.schema.items():
                 # check column_name is unique
                 self.assertFalse(column_name in seen_columns)
                 seen_columns.append(column_name)
@@ -78,7 +81,7 @@ class TestDataset(TestBase):
 
                 # check has require attributes
                 self.assertTrue(SIMPLETYPE in column_attributes)
-                self.assertTrue(Dataset.OLAP_TYPE in column_attributes)
+                self.assertTrue(OLAP_TYPE in column_attributes)
                 self.assertTrue(Dataset.LABEL in column_attributes)
 
                 # check label is an original column
@@ -90,3 +93,21 @@ class TestDataset(TestBase):
 
             # ensure all columns in df_columns have store columns
             self.assertTrue(len(df_columns) == 0)
+
+    def test_dframe(self):
+        dataset = Dataset()
+        dataset.save(self.test_dataset_ids['good_eats.csv'])
+        dataset.save_observations(
+            recognize_dates(self.test_data['good_eats.csv']))
+        records = [x for x in Observation.find(dataset)]
+        dframe = dataset.dframe()
+
+        self.assertTrue(isinstance(dframe, DataFrame))
+        self.assertTrue(all(self.test_data['good_eats.csv'].reindex(
+                        columns=dframe.columns).eq(dframe)))
+        columns = dframe.columns
+        # ensure no reserved keys
+        for key in MONGO_RESERVED_KEY_STRS:
+            self.assertFalse(key in columns)
+        # ensure date is converted
+        self.assertTrue(isinstance(dframe.submit_date[0], datetime))

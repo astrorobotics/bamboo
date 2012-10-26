@@ -1,16 +1,34 @@
-from config.db import Database
-from lib.constants import DATASET_ID
-from lib.decorators import classproperty
-from lib.mongo import remove_mongo_reserved_keys
+from math import ceil
+
+from bamboo.config.db import Database
+from bamboo.config.settings import DB_BATCH_SIZE
+from bamboo.core.frame import BAMBOO_RESERVED_KEYS, DATASET_ID
+from bamboo.lib.decorators import classproperty
+from bamboo.lib.mongo import dict_for_mongo, remove_mongo_reserved_keys
 
 
 class AbstractModel(object):
 
     __collection__ = None
 
+    STATE = 'status'
+    STATE_PENDING = 'pending'
+    STATE_READY = 'ready'
+
+    @property
+    def status(self):
+        return self.record[self.STATE]
+
+    @property
+    def is_ready(self):
+        return self.status == self.STATE_READY
+
     @classmethod
     def set_collection(cls, collection_name):
         return Database.db()[collection_name]
+
+    def ready(self):
+        self.update({self.STATE: self.STATE_READY})
 
     @classproperty
     @classmethod
@@ -21,8 +39,28 @@ class AbstractModel(object):
         return cls.__collection__
 
     @classmethod
-    def find(cls, query, select=None, as_dict=False):
-        records = cls.collection.find(query, select)
+    def find(cls, query, select=None, as_dict=False,
+             limit=0, order_by=None):
+        """
+        Interface to mongo's find()
+
+        order_by: sort resulting rows according to a column value (ASC or DESC)
+            Examples:   order_by='mycolumn'
+                        order_by='-mycolumn'
+
+        limit: apply a limit on the number of rows returned.
+            limit is applied AFTER ordering.
+        """
+        if order_by:
+            if order_by[0] in ('-', '+'):
+                sort_dir, field = -1 if order_by[0] == '-' else 1, order_by[1:]
+            else:
+                sort_dir, field = 1, order_by
+            order_by = [(field, sort_dir)]
+
+        records = cls.collection.find(
+            query, select, sort=order_by, limit=limit)
+
         return [record for record in records] if as_dict else [
             cls(record) for record in records
         ]
@@ -40,17 +78,44 @@ class AbstractModel(object):
     def __nonzero__(self):
         return self.record is not None
 
+    @property
+    def clean_record(self):
+        """
+        Remove reserved keys from records.
+        """
+        _dict = dict([
+            (key, value) for (key, value) in self.record.items() if not key in
+            BAMBOO_RESERVED_KEYS
+        ])
+        return remove_mongo_reserved_keys(_dict)
+
     def delete(self, query):
         """
         Delete the record.
         """
         self.collection.remove(query, safe=True)
 
-    @property
-    def clean_record(self):
+    def save(self, record):
+        self.collection.insert(record, safe=True)
+        self.record = record
+        return record
+
+    def update(self, record):
         """
-        Remove reserved keys from records.
+        Update the model instance based on its *_id*, setting it to the passed
+        in *record*.
         """
-        _dict = remove_mongo_reserved_keys(self.record)
-        _dict.pop(DATASET_ID, None)
-        return _dict
+        record = dict_for_mongo(record)
+        self.collection.update(
+            {'_id': self.record['_id']}, {'$set': record}, safe=True)
+
+    def batch_save(self, records):
+        """
+        Save records in batches to avoid document size maximum setting.
+        """
+        batches = int(ceil(float(len(records)) / DB_BATCH_SIZE))
+
+        for batch in range(0, batches):
+            start = batch * DB_BATCH_SIZE
+            end = (batch + 1) * DB_BATCH_SIZE
+            self.collection.insert(records[start:end], safe=True)

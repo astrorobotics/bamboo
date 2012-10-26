@@ -1,16 +1,26 @@
 import json
 
-from controllers.abstract_controller import AbstractController
-from lib.constants import ID
-from lib.mongo import dump_mongo_json
-from lib.utils import call_async, dump_or_error
-from models.calculation import Calculation
-from models.dataset import Dataset
+from bamboo.controllers.abstract_controller import AbstractController
+from bamboo.core.parser import ParseError
+from bamboo.lib.mongo import dump_mongo_json
+from bamboo.models.calculation import Calculation
+from bamboo.models.dataset import Dataset
 
 
 class Calculations(AbstractController):
+    """
+    The Calculations Controller provides access to calculations.  Calculations
+    are formulas and names
+    that (for now) must be linked to a specific dataset via that dataset's ID.
 
-    def DELETE(self, dataset_id, name):
+    All actions in the Calculations Controller can optionally take a *callback*
+    parameter.  If passed the returned result will be wrapped this the
+    parameter value.  E.g., is ``callback=parseResults`` the returned value
+    will be ``parseResults([some-JSON])``, where ``some-JSON`` is the function
+    return value.
+    """
+
+    def delete(self, dataset_id, name, callback=False):
         """
         Delete the calculation for the dataset specified by the hash
         *dataset_id* from mongo and the column *name*.
@@ -23,31 +33,41 @@ class Calculations(AbstractController):
         calculation = Calculation.find_one(dataset_id, name)
         if calculation:
             dataset = Dataset.find_one(dataset_id)
-            task = call_async(calculation.delete, calculation, dataset)
+            calculation.delete(dataset)
             result = {self.SUCCESS: 'deleted calculation: %s for dataset: %s' %
                       (name, dataset_id)}
-        return dump_or_error(result,
-                             'name and dataset_id combination not found')
+        return self.dump_or_error(result,
+                                  'name and dataset_id combination not found',
+                                  callback)
 
-    def POST(self, dataset_id, formula, name, group=None):
+    def create(self, dataset_id, formula, name, group=None, callback=False):
         """
         Create a new calculation for *dataset_id* named *name* that calulates
         the *formula*.  Variables in formula can only refer to columns in the
         dataset.
         """
+        error = 'dataset_id not found'
+        result = None
         dataset = Dataset.find_one(dataset_id)
         if dataset:
-            calculation = Calculation()
-            calculation.save(dataset, formula, name, group)
-            return dump_mongo_json(calculation.clean_record)
+            try:
+                Calculation.create(dataset, formula, name, group)
+                result = {
+                    self.SUCCESS: 'created calulcation: %s for dataset: %s'
+                    % (name, dataset_id)}
+            except ParseError as e:
+                error = e.__str__()
+        return self.dump_or_error(result, error, callback)
 
-    def GET(self, dataset_id):
+    def show(self, dataset_id, callback=False):
         """
         Retrieve the calculations for *dataset_id*.
         """
         dataset = Dataset.find_one(dataset_id)
+        result = None
+
         if dataset:
             # get the calculations
-            calculations = Calculation.find(dataset)
-            return dump_mongo_json(
-                [x.clean_record for x in calculations])
+            result = dataset.calculations()
+            result = [x.clean_record for x in result]
+        return self.dump_or_error(result, 'dataset_id not found', callback)

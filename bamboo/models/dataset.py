@@ -2,38 +2,50 @@ import json
 import uuid
 from time import gmtime, strftime
 
-from celery.contrib.methods import task
+from celery.task import task
+from celery.contrib.methods import task as class_task
 import numpy as np
-from pandas import concat, Series
 
-from lib.constants import ALL, BAMBOO_RESERVED_KEY_PREFIX, DATASET_ID,\
-    DATASET_OBSERVATION_ID, DIMENSION, ERROR, ID, NUM_COLUMNS, NUM_ROWS,\
-    PARENT_DATASET_ID, SCHEMA, SIMPLETYPE
-from lib.exceptions import MergeError
-from lib.schema_builder import SchemaBuilder
-from lib.summary import summarize_df, summarize_with_groups
-from lib.utils import reserve_encoded, split_groups
-from models.abstract_model import AbstractModel
-from models.calculation import Calculation
-from models.observation import Observation
+from bamboo.core.calculator import Calculator
+from bamboo.core.frame import BambooFrame, BAMBOO_RESERVED_KEY_PREFIX,\
+    DATASET_ID, DATASET_OBSERVATION_ID, PARENT_DATASET_ID
+from bamboo.core.summary import summarize
+from bamboo.lib.mongo import reserve_encoded
+from bamboo.lib.schema_builder import DIMENSION, OLAP_TYPE,\
+    schema_from_data_and_dtypes, SIMPLETYPE
+from bamboo.lib.utils import call_async, split_groups
+from bamboo.models.abstract_model import AbstractModel
+from bamboo.models.calculation import Calculation
+from bamboo.models.observation import Observation
+
+
+@task
+def delete_task(dataset):
+    Observation.delete_all(dataset)
+    super(dataset.__class__, dataset).delete({DATASET_ID: dataset.dataset_id})
 
 
 class Dataset(AbstractModel):
 
     __collectionname__ = 'datasets'
 
+    # caching keys
     STATS = '_stats'
+    ALL = '_all'
 
     # metadata
+    AGGREGATED_DATASETS = BAMBOO_RESERVED_KEY_PREFIX + 'linked_datasets'
     ATTRIBUTION = 'attribution'
     CARDINALITY = 'cardinality'
     CREATED_AT = 'created_at'
     DESCRIPTION = 'description'
+    ID = 'id'
     LABEL = 'label'
     LICENSE = 'license'
-    LINKED_DATASETS = BAMBOO_RESERVED_KEY_PREFIX + 'linked_datasets'
+    NUM_COLUMNS = 'num_columns'
+    NUM_ROWS = 'num_rows'
     MERGED_DATASETS = 'merged_datasets'
-    OLAP_TYPE = 'olap_type'
+    SCHEMA = 'schema'
     UPDATED_AT = 'updated_at'
 
     # commonly accessed variables
@@ -46,21 +58,21 @@ class Dataset(AbstractModel):
         return self.record[DATASET_ID]
 
     @property
+    def schema(self):
+        return self.record.get(self.SCHEMA)
+
+    @property
     def stats(self):
         return self.record.get(self.STATS, {})
 
     @property
-    def data_schema(self):
-        return self.record.get(SCHEMA)
+    def aggregated_datasets_dict(self):
+        return self.record.get(self.AGGREGATED_DATASETS, {})
 
     @property
-    def linked_datasets_dict(self):
-        return self.record.get(self.LINKED_DATASETS, {})
-
-    @property
-    def linked_datasets(self):
+    def aggregated_datasets(self):
         return dict([(group, self.find_one(_id)) for (group, _id) in
-                     self.linked_datasets_dict.items()])
+                     self.aggregated_datasets_dict.items()])
 
     @property
     def merged_dataset_ids(self):
@@ -70,13 +82,26 @@ class Dataset(AbstractModel):
     def merged_datasets(self):
         return [self.find_one(_id) for _id in self.merged_dataset_ids]
 
+    def is_factor(self, col):
+        return self.schema[col][OLAP_TYPE] == DIMENSION
+
+    def cardinality(self, col):
+        if self.is_factor(col):
+            return self.schema[col][self.CARDINALITY]
+
+    def dframe(self, query=None, select=None, keep_parent_ids=False,
+               limit=0, order_by=None):
+        observations = self.observations(query=query, select=select,
+                                         limit=limit, order_by=order_by)
+        dframe = BambooFrame(observations)
+        dframe.decode_mongo_reserved_keys()
+        dframe.remove_bamboo_reserved_keys(keep_parent_ids)
+        return dframe
+
     def add_merged_dataset(self, new_dataset):
         self.update({
             self.MERGED_DATASETS: self.merged_datasets +
             [new_dataset.dataset_id]})
-
-    def clear_linked_datasets(self):
-        self.update({self.LINKED_DATASETS: {}})
 
     def clear_summary_stats(self, field=ALL):
         """
@@ -91,27 +116,29 @@ class Dataset(AbstractModel):
         """
         Store dataset with *dataset_id* as the unique internal ID.
         Create a new dataset_id if one is not passed.
+
+        Datasets are initially in a **pending** state.  After the dataset has
+        been uploaded and inserted into the database it is in a **ready** state
+        .
         """
         if dataset_id is None:
             dataset_id = uuid.uuid4().hex
 
         record = {
-            self.CREATED_AT: strftime("%Y-%m-%d %H:%M:%S", gmtime()),
             DATASET_ID: dataset_id,
             DATASET_OBSERVATION_ID: uuid.uuid4().hex,
-            self.LINKED_DATASETS: {},
+            self.AGGREGATED_DATASETS: {},
+            self.CREATED_AT: strftime("%Y-%m-%d %H:%M:%S", gmtime()),
+            self.STATE: self.STATE_PENDING,
         }
-        self.collection.insert(record, safe=True)
-        self.record = record
-        return record
+        return super(self.__class__, self).save(record)
 
-    @task
     def delete(self):
-        super(self.__class__, self).delete({DATASET_ID: self.dataset_id})
-        Observation.delete_all(self)
+        call_async(delete_task, self)
 
-    @task
-    def summarize(self, query=None, select=None, group_str=ALL):
+    @class_task
+    def summarize(self, query=None, select=None,
+                  group_str=None, limit=0, order_by=None):
         """
         Return a summary for the rows/values filtered by *query* and *select*
         and grouped by *group_str* or the overall summary if no group is
@@ -119,41 +146,24 @@ class Dataset(AbstractModel):
 
         *group_str* may be a string of many comma separated groups.
         """
+        # interpret none as all
+        if not group_str:
+            group_str = self.ALL
+
         # split group in case of multigroups
         groups = split_groups(group_str)
-        group_key = ALL
 
         # if select append groups to select
         if select:
             select = json.loads(select)
             select.update(dict(zip(groups, [1] * len(groups))))
             select = json.dumps(select)
-        if group_str != ALL:
-            group_key = '%s,%s' % (group_str, select)
 
         # narrow list of observations via query/select
-        dframe = self.observations(query, select, as_df=True)
+        dframe = self.dframe(query=query, select=select,
+                             limit=limit, order_by=order_by)
 
-        # do not allow group by numeric types
-        for group in groups:
-            group_type = self.data_schema.get(group)
-            _type = dframe.dtypes.get(group)
-            if group != ALL and (group_type is None or
-                                 group_type[self.OLAP_TYPE] != DIMENSION):
-                return {ERROR: "group: '%s' is not a dimension." % group}
-
-        # check cached stats for group and update as necessary
-        stats = self.stats
-        if query or not stats.get(group_key):
-            stats = {ALL: summarize_df(dframe)} if group_str == ALL \
-                else summarize_with_groups(
-                    dframe, stats, group_key, groups, select)
-            if not query:
-                self.update({self.STATS: stats})
-        stats_to_return = stats.get(group_key)
-
-        return stats_to_return if group_str == ALL else {
-            group_str: stats_to_return}
+        return summarize(self, dframe, groups, group_str, query or select)
 
     @classmethod
     def find_one(cls, dataset_id):
@@ -163,35 +173,33 @@ class Dataset(AbstractModel):
     def find(cls, dataset_id):
         return super(cls, cls).find({DATASET_ID: dataset_id})
 
-    def update(self, _dict):
+    def update(self, record):
         """
-        Update dataset *dataset* with *_dict*.
+        Update dataset *dataset* with *record*.
         """
-        _dict[self.UPDATED_AT] = strftime("%Y-%m-%d %H:%M:%S", gmtime())
-        self.record.update(_dict)
-        self.collection.update({DATASET_ID: self.dataset_id}, self.record,
-                               safe=True)
+        record[self.UPDATED_AT] = strftime("%Y-%m-%d %H:%M:%S", gmtime())
+        super(self.__class__, self).update(record)
+        self.record = self.__class__.find_one(self.dataset_id).record
 
     def build_schema(self, dframe):
         """
         Build schema for a dataset.
         """
-        schema_builder = SchemaBuilder(self)
-        schema = schema_builder.schema_from_data_and_dtypes(dframe)
-        self.update({SCHEMA: schema})
+        schema = schema_from_data_and_dtypes(self, dframe)
+        self.update({self.SCHEMA: schema})
 
-    def schema(self):
+    def info(self):
         return {
-            ID: self.dataset_id,
+            self.ID: self.dataset_id,
             self.LABEL: '',
             self.DESCRIPTION: '',
-            SCHEMA: self.data_schema,
+            self.SCHEMA: self.schema,
             self.LICENSE: '',
             self.ATTRIBUTION: '',
             self.CREATED_AT: self.record.get(self.CREATED_AT),
             self.UPDATED_AT: self.record.get(self.UPDATED_AT),
-            NUM_COLUMNS: self.record.get(NUM_COLUMNS),
-            NUM_ROWS: self.record.get(NUM_ROWS),
+            self.NUM_COLUMNS: self.record.get(self.NUM_COLUMNS),
+            self.NUM_ROWS: self.record.get(self.NUM_ROWS),
         }
 
     def build_labels_to_slugs(self):
@@ -200,10 +208,11 @@ class Dataset(AbstractModel):
         """
         return dict([
             (column_attrs[self.LABEL], reserve_encoded(column_name)) for
-            (column_name, column_attrs) in self.data_schema.items()])
+            (column_name, column_attrs) in self.schema.items()])
 
-    def observations(self, query=None, select=None, as_df=False):
-        return Observation.find(self, query, select, as_df)
+    def observations(self, query=None, select=None, limit=0, order_by=None):
+        return Observation.find(self, query, select,
+                                limit=limit, order_by=order_by)
 
     def calculations(self):
         return Calculation.find(self)
@@ -211,17 +220,25 @@ class Dataset(AbstractModel):
     def remove_parent_observations(self, parent_id):
         Observation.delete_all(self, {PARENT_DATASET_ID: parent_id})
 
-    @classmethod
-    def merge(cls, datasets):
-        if len(datasets) < 2:
-            raise MergeError(
-                'merge requires 2 datasets (found %s)' % len(datasets))
+    def add_observations(self, json_data):
+        """
+        Update *dataset* with new *data*.
+        """
+        calculator = Calculator(self)
+        call_async(calculator.calculate_updates, calculator,
+                   json.loads(json_data))
 
-        dframes = []
-        for dataset in datasets:
-            dframe = dataset.observations(as_df=True)
-            column = Series([dataset.dataset_id] * len(dframe))
-            column.name = PARENT_DATASET_ID
-            dframes.append(dframe.join(column))
+    def save_observations(self, dframe):
+        """
+        Save rows in *dframe* for this dataset.
+        """
+        Observation().save(dframe, self)
+        return self.dframe()
 
-        return concat(dframes, ignore_index=True)
+    def replace_observations(self, dframe):
+        """
+        Remove all rows for this dataset and save the rows in *dframe*.
+        """
+        self.build_schema(dframe)
+        Observation.delete_all(self)
+        return self.save_observations(dframe)

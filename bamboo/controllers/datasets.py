@@ -1,30 +1,31 @@
-import json
-
 import cherrypy
+import urllib2
 
-from controllers.abstract_controller import AbstractController
-from lib.constants import ALL, ERROR, ID
-from lib.exceptions import JSONError, MergeError
-from lib.mongo import mongo_to_json
-from lib.io import create_dataset_from_url, create_dataset_from_csv
-from lib.tasks.import_dataset import import_dataset
-from lib.utils import call_async, dump_or_error
-from models.calculation import Calculation
-from models.dataset import Dataset
-from models.observation import Observation
+from bamboo.controllers.abstract_controller import AbstractController,\
+    ArgumentError
+from bamboo.core.merge import merge_dataset_ids, MergeError
+from bamboo.core.summary import ColumnTypeError
+from bamboo.lib.jsontools import JSONError
+from bamboo.lib.io import create_dataset_from_url, create_dataset_from_csv
+from bamboo.models.calculation import Calculation
+from bamboo.models.dataset import Dataset
 
 
 class Datasets(AbstractController):
-    'Datasets controller'
+    """
+    The Datasets Controller provides access to data.  Datasets can store data
+    from uploaded CSVs or URLs pointing to CSVs.  Additional rows can be passed
+    as JSON and added to a dataset.
 
+    All actions in the Datasets Controller can optionally take a *callback*
+    parameter.  If passed the returned result will be wrapped this the
+    parameter value.  E.g., is ``callback=parseResults`` the returned value
+    will be ``parseResults([some-JSON])``, where ``some-JSON`` is the function
+    return value.
+    """
     SELECT_ALL_FOR_SUMMARY = 'all'
 
-    # modes for dataset GET
-    MODE_INFO = 'info'
-    MODE_RELATED = 'related'
-    MODE_SUMMARY = 'summary'
-
-    def DELETE(self, dataset_id):
+    def delete(self, dataset_id, callback=False):
         """
         Delete the dataset with hash *dataset_id* from mongo
         """
@@ -32,60 +33,92 @@ class Datasets(AbstractController):
         result = None
 
         if dataset.record:
-            task = call_async(dataset.delete, dataset)
+            dataset.delete()
             result = {self.SUCCESS: 'deleted dataset: %s' % dataset_id}
-        return dump_or_error(result, 'id not found')
+        return self.dump_or_error(result, 'id not found', callback)
 
-    def GET(self, dataset_id, mode=False, query=None, select=None,
-            group=ALL):
+    def info(self, dataset_id, callback=False):
         """
-        Based on *mode* perform different operations on the dataset specified
-        by *dataset_id*.
+        Return the data for *dataset_id*. Returns an error message if
+        *dataset_id* does not exist.
+        """
+        def _action(dataset):
+            return dataset.info()
+        return self._safe_get_and_call(dataset_id, _action, callback)
 
-        - *info*: return the meta-data and schema of the dataset.
-        - *related*: return the dataset_ids of linked datasets for the
-        dataset.
-        - *summary*: return summary statistics for the dataset.
+    def summary(self, dataset_id, query=None, select=None,
+                group=None, limit=0, order_by=None, callback=False):
+        """
+
           - The *select* argument is required, it can be 'all' or a MongoDB
             JSON query
           - If *group* is passed group the summary.
           - If *query* is passed restrict summary to rows matching query.
-        - no mode passed: Return the raw data for the dataset.
-          - Restrict to *query* and *select* if passed.
 
-        Returns an error message if dataset_id does not exists, mode does not
-        exist, or the JSON for query or select is improperly formatted.
-        Otherwise, returns the result from above dependent on mode.
+        Returns an error message if *dataset_id* does not exist or the JSON for
+        query or select is improperly formatted.
         """
-        dataset = Dataset.find_one(dataset_id)
+        def _action(dataset, query=query, select=select, group=group,
+                    limit=limit, order_by=order_by):
+            if select is None:
+                raise ArgumentError('no select')
+            if select == self.SELECT_ALL_FOR_SUMMARY:
+                select = None
+            return dataset.summarize(dataset, query, select,
+                                     group, limit=limit,
+                                     order_by=order_by)
+        return self._safe_get_and_call(dataset_id, _action, callback)
+
+    def related(self, dataset_id, callback=False):
+        """
+        Return a dict of aggregated data for the given *dataset_id*.
+        The dict is of the form {group: id}.
+
+        Returns an error message if *dataset_id* does not exist.
+        """
+        def _action(dataset):
+            return dataset.aggregated_datasets_dict
+        return self._safe_get_and_call(dataset_id, _action, callback)
+
+    def show(self, dataset_id, query=None, select=None,
+             group=None, limit=0, order_by=None, callback=False):
+        """
+        Return rows for *dataset_id*, passing *query* and *select* onto
+        MongoDB.
+
+        Returns an error message if *dataset_id* does not exist or the JSON for
+        query or select is improperly formatted.
+        """
+        def _action(dataset, query=query, select=select,
+                    limit=limit, order_by=order_by):
+            return dataset.dframe(
+                query=query, select=select,
+                limit=limit, order_by=order_by).to_jsondict()
+
+        return self._safe_get_and_call(dataset_id, _action, callback)
+
+    def merge(self, datasets=None, callback=False):
+        """
+        Merge the datasets with the dataset_ids in *datasets*.
+
+        *dataset* should be a JSON encoded array of dataset IDs for existing
+        datasets.
+
+        Returns the ID of the new merged datasets created by combining the
+        datasets provided as an argument.
+        """
         result = None
-        error = 'id not found'
+        error = 'merge failed'
 
         try:
-            if dataset.record:
-                if mode == self.MODE_INFO:
-                    result = dataset.schema()
-                elif mode == self.MODE_RELATED:
-                    result = dataset.linked_datasets_dict
-                elif mode == self.MODE_SUMMARY:
-                    # for summary require a select
-                    if select is None:
-                        error = 'no select'
-                    else:
-                        if select == self.SELECT_ALL_FOR_SUMMARY:
-                            select = None
-                        result = dataset.summarize(
-                            dataset, query, select, group)
-                elif mode is False:
-                    return mongo_to_json(dataset.observations(query, select))
-                else:
-                    error = 'unsupported API call'
-        except JSONError as e:
+            dataset = merge_dataset_ids(datasets)
+            result = {Dataset.ID: dataset.dataset_id}
+        except (ValueError, MergeError) as e:
             error = e.__str__()
 
-        return dump_or_error(result, error)
+        return self.dump_or_error(result, error, callback)
 
-    def POST(self, merge=None, url=None, csv_file=None, datasets=None):
+    def create(self, url=None, csv_file=None, callback=False):
         """
         If *url* is provided read data from URL *url*.
         If *csv_file* is provided read data from *csv_file*.
@@ -110,48 +143,39 @@ class Datasets(AbstractController):
         error = 'url or csv_file required'
 
         try:
-            if merge:
-                result = self._merge(datasets)
-            elif url:
-                result = create_dataset_from_url(url)
+            if url:
+                dataset = create_dataset_from_url(url)
             elif csv_file:
-                result = create_dataset_from_csv(csv_file)
-        except (ValueError, MergeError) as e:
-            error = e.__str__()
+                dataset = create_dataset_from_csv(csv_file)
+            result = {Dataset.ID: dataset.dataset_id}
+        except IOError:
+            error = 'could not get a filehandle for: %s' % csv_file
+        except urllib2.URLError:
+            error = 'could not load: %s' % url
 
-        return dump_or_error(result, error)
+        return self.dump_or_error(result, error, callback)
 
-    def PUT(self, dataset_id):
+    def update(self, dataset_id, callback=False):
         """
         Update the *dataset_id* with the body as JSON.
         """
+        result = None
+        error = 'dataset for this id does not exist'
         dataset = Dataset.find_one(dataset_id)
-        if dataset:
-            Calculation.update(
-                dataset,
-                data=json.loads(cherrypy.request.body.read()))
-            # return some success value
-            return json.dumps({ID: dataset_id})
-        else:
-            return json.dumps({ERROR:
-                               'dataset for this id does not exist'})
+        if dataset.record:
+            dataset.add_observations(cherrypy.request.body.read())
+            result = {Dataset.ID: dataset_id}
+        return self.dump_or_error(result, error, callback)
 
-    def _merge(self, datasets):
-        # try to get each of the datasets
-        dataset_ids = json.loads(datasets)
+    def _safe_get_and_call(self, dataset_id, action, callback, **kwargs):
+        dataset = Dataset.find_one(dataset_id)
+        error = 'id not found'
         result = None
 
-        datasets = [Dataset.find_one(dataset_id) for dataset_id in dataset_ids]
-        new_dframe = Dataset.merge(datasets)
+        try:
+            if dataset.record:
+                result = action(dataset, **kwargs)
+        except (ArgumentError, ColumnTypeError, JSONError) as e:
+            error = e.__str__()
 
-        # save the resulting dframe as a new dataset
-        new_dataset = Dataset()
-        new_dataset.save()
-        call_async(import_dataset, new_dataset, dframe=new_dframe)
-
-        # store the child dataset ID with each parent
-        for dataset in datasets:
-            dataset.add_merged_dataset(new_dataset)
-
-        # return the new dataset ID
-        return {ID: new_dataset.dataset_id}
+        return self.dump_or_error(result, error, callback)

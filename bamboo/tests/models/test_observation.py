@@ -1,15 +1,10 @@
-from datetime import datetime
-
-from pandas import DataFrame, read_csv
 from pymongo.cursor import Cursor
 
-from lib.constants import MONGO_RESERVED_KEYS
-from lib.exceptions import JSONError
-from lib.mongo import mongo_decode_keys
-from lib.utils import prefix_reserved_key, recognize_dates
-from models.dataset import Dataset
-from models.observation import Observation
-from tests.test_base import TestBase
+from bamboo.lib.datetools import recognize_dates
+from bamboo.lib.jsontools import JSONError
+from bamboo.models.dataset import Dataset
+from bamboo.models.observation import Observation
+from bamboo.tests.test_base import TestBase
 
 
 class TestObservation(TestBase):
@@ -46,20 +41,6 @@ class TestObservation(TestBase):
         self._save_observations()
         rows = Observation.find(self.dataset)
         self.assertTrue(isinstance(rows, list))
-
-    def test_find_as_df(self):
-        self._save_observations()
-        records = [x for x in Observation.find(self.dataset)]
-        dframe = Observation.find(self.dataset, as_df=True)
-        self.assertTrue(isinstance(dframe, DataFrame))
-        self.assertTrue(all(self.test_data['good_eats.csv'].reindex(
-                        columns=dframe.columns).eq(dframe)))
-        columns = dframe.columns
-        # ensure no reserved keys
-        for key in MONGO_RESERVED_KEYS:
-            self.assertFalse(prefix_reserved_key(key) in columns)
-        # ensure date's converted
-        self.assertTrue(isinstance(dframe.submit_date[0], datetime))
 
     def test_find_with_query(self):
         self._save_observations()

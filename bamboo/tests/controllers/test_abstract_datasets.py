@@ -1,12 +1,14 @@
 import json
+import os
 
 import cherrypy
 
-from controllers.datasets import Datasets
-from lib.constants import ID, SCHEMA
-from lib.io import create_dataset_from_url
-from lib.utils import df_to_jsondict, series_to_jsondict
-from tests.test_base import TestBase
+from bamboo.controllers.datasets import Datasets
+from bamboo.core.frame import BambooFrame
+from bamboo.lib.io import create_dataset_from_url
+from bamboo.lib.jsontools import series_to_jsondict
+from bamboo.models.dataset import Dataset
+from bamboo.tests.test_base import TestBase
 
 
 class TestAbstractDatasets(TestBase):
@@ -21,15 +23,17 @@ class TestAbstractDatasets(TestBase):
         self._update_check_file_path = 'tests/fixtures/%s' %\
             self._update_check_file_name
 
-    def _post_row_updates(self, dataset_id=None):
+    def _put_row_updates(self, dataset_id=None, file_path=None):
         if not dataset_id:
             dataset_id = self.dataset_id
         # mock the cherrypy server by setting the POST request body
-        cherrypy.request.body = open(self._update_file_path, 'r')
-        result = json.loads(self.controller.PUT(dataset_id=dataset_id))
+        if not file_path:
+            file_path = self._update_file_path
+        cherrypy.request.body = open(file_path, 'r')
+        result = json.loads(self.controller.update(dataset_id=dataset_id))
         self.assertTrue(isinstance(result, dict))
-        self.assertTrue(ID in result)
-        # set up the values to test against
+        self.assertTrue(Dataset.ID in result)
+        # set up the (default) values to test against
         with open(self._update_check_file_path, 'r') as f:
             self._update_values = json.loads(f.read())
 
@@ -37,18 +41,19 @@ class TestAbstractDatasets(TestBase):
         if file_name is None:
             file_name = self._file_name
         self.dataset_id = create_dataset_from_url(
-            'file://tests/fixtures/%s' % file_name, allow_local_file=True)[ID]
-        self.schema = json.loads(self.controller.GET(self.dataset_id,
-                                 mode=self.controller.MODE_INFO))[SCHEMA]
+            'file://localhost%s/tests/fixtures/%s' % (os.getcwd(), file_name),
+            allow_local_file=True).dataset_id
+        self.schema = json.loads(
+            self.controller.info(self.dataset_id))[Dataset.SCHEMA]
 
     def _check_dframes_are_equal(self, dframe1, dframe2):
         self._check_dframe_is_subset(dframe1, dframe2)
         self._check_dframe_is_subset(dframe2, dframe1)
 
     def _check_dframe_is_subset(self, dframe1, dframe2):
-        dframe2_rows = df_to_jsondict(dframe2)
+        dframe2_rows = BambooFrame(dframe2).to_jsondict()
         for row in dframe1.iterrows():
             dframe1_row = series_to_jsondict(row[1])
             self.assertTrue(dframe1_row in dframe2_rows,
                             'dframe1_row: %s\n\ndframe2_rows: %s' % (
-                                dframe1_row, dframe2_rows))
+                                dframe1_row, dframe2_rows[-1]))

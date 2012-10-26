@@ -1,13 +1,15 @@
 import json
+import time
 
-from controllers.abstract_controller import AbstractController
-from controllers.calculations import Calculations
-from controllers.datasets import Datasets
-from lib.constants import ALL, DATASET_ID, ERROR, ID
-from lib.io import create_dataset_from_url
-from models.calculation import Calculation
-from models.dataset import Dataset
-from tests.test_base import TestBase
+from bamboo.controllers.abstract_controller import AbstractController
+from bamboo.controllers.calculations import Calculations
+from bamboo.controllers.datasets import Datasets
+from bamboo.core.frame import DATASET_ID
+from bamboo.lib.io import create_dataset_from_url
+from bamboo.models.calculation import Calculation
+from bamboo.models.dataset import Dataset
+from bamboo.tests.decorators import requires_async
+from bamboo.tests.test_base import TestBase
 
 
 class TestCalculations(TestBase):
@@ -15,46 +17,71 @@ class TestCalculations(TestBase):
     def setUp(self):
         TestBase.setUp(self)
 
-        self._file = 'file://tests/fixtures/good_eats.csv'
-        self.dataset_id = create_dataset_from_url(self._file,
-                                                  allow_local_file=True)[ID]
+        self.dataset_id = create_dataset_from_url(
+            '%s%s' % (self._local_fixture_prefix(), 'good_eats.csv'),
+            allow_local_file=True).dataset_id
         self.controller = Calculations()
         self.formula = 'amount + gps_alt'
         self.name = 'test'
 
     def _post_formula(self):
-        return self.controller.POST(self.dataset_id, self.formula, self.name)
+        return self.controller.create(self.dataset_id, self.formula, self.name)
 
-    def test_GET(self):
+    def test_show(self):
         self._post_formula()
-        response = self.controller.GET(self.dataset_id)
+        response = self.controller.show(self.dataset_id)
         self.assertTrue(isinstance(json.loads(response), list))
 
-    def test_POST(self):
+    def test_create(self):
         response = json.loads(self._post_formula())
         self.assertTrue(isinstance(response, dict))
         self.assertFalse(DATASET_ID in response)
 
-    def test_POST_remove_summary(self):
-        Datasets().GET(
+    @requires_async
+    def test_create_async(self):
+        while True:
+            dataset = Dataset.find_one(self.dataset_id)
+            if dataset.is_ready:
+                break
+            sleep(0.1)
+        response = json.loads(self._post_formula())
+        self.assertTrue(isinstance(response, dict))
+        self.assertFalse(DATASET_ID in response)
+        time.sleep(1)
+        dataset = Dataset.find_one(self.dataset_id)
+        self.assertTrue(self.name in dataset.schema.keys())
+
+    def test_create_invalid_formula(self):
+        result = json.loads(
+            self.controller.create(self.dataset_id, '=NON_EXIST', self.name))
+        self.assertTrue(isinstance(result, dict))
+        self.assertTrue(Datasets.ERROR in result.keys())
+
+    def test_create_remove_summary(self):
+        Datasets().summary(
             self.dataset_id,
-            mode=Datasets.MODE_SUMMARY,
             select=Datasets.SELECT_ALL_FOR_SUMMARY)
         dataset = Dataset.find_one(self.dataset_id)
         self.assertTrue(isinstance(dataset.stats, dict))
-        self.assertTrue(isinstance(dataset.stats[ALL], dict))
+        self.assertTrue(isinstance(dataset.stats[Dataset.ALL], dict))
         self._post_formula()
         # stats should have new column for calculation
         dataset = Dataset.find_one(self.dataset_id)
-        self.assertTrue(self.name in dataset.stats.get(ALL).keys())
+        self.assertTrue(self.name in dataset.stats.get(Dataset.ALL).keys())
 
-    def test_DELETE_nonexistent_calculation(self):
-        result = json.loads(self.controller.DELETE(self.dataset_id, self.name))
-        self.assertTrue(ERROR in result)
+    def test_delete_nonexistent_calculation(self):
+        result = json.loads(self.controller.delete(self.dataset_id, self.name))
+        self.assertTrue(Calculations.ERROR in result)
 
-    def test_DELETE(self):
+    def test_delete(self):
         self._post_formula()
-        result = json.loads(self.controller.DELETE(self.dataset_id, self.name))
+        result = json.loads(self.controller.delete(self.dataset_id, self.name))
         self.assertTrue(AbstractController.SUCCESS in result)
         dataset = Dataset.find_one(self.dataset_id)
         self.assertTrue(self.name not in dataset.build_labels_to_slugs())
+
+    def test_show_jsonp(self):
+        self._post_formula()
+        results = self.controller.show(self.dataset_id, callback='jsonp')
+        self.assertEqual('jsonp(', results[0:6])
+        self.assertEqual(')', results[-1])

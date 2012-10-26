@@ -1,12 +1,29 @@
-from celery.contrib.methods import task
+from celery.task import task
 
-from lib.constants import DATASET_ID, ERROR
-from lib.exceptions import ParseError
-from lib.parser import Parser, ParserContext
-from lib.tasks.calculator import Calculator
-from lib.utils import call_async
-from models.abstract_model import AbstractModel
-from models.observation import Observation
+from bamboo.core.calculator import Calculator
+from bamboo.core.frame import DATASET_ID
+from bamboo.core.parser import Parser, ParserContext
+from bamboo.lib.utils import call_async
+from bamboo.models.abstract_model import AbstractModel
+
+
+@task
+def delete_task(calculation, dataset):
+    dframe = dataset.dframe()
+    slug = dataset.build_labels_to_slugs()[calculation.name]
+    del dframe[slug]
+    dataset.replace_observations(dframe)
+    super(calculation.__class__, calculation).delete({
+        DATASET_ID: calculation.dataset_id,
+        calculation.NAME: calculation.name
+    })
+
+
+@task
+def calculate_task(calculation, dataset, calculator, formula, name, group):
+    dataset.clear_summary_stats()
+    calculator.calculate_column(formula, name, group)
+    calculation.ready()
 
 
 class Calculation(AbstractModel):
@@ -31,47 +48,41 @@ class Calculation(AbstractModel):
     def formula(self):
         return self.record[self.FORMULA]
 
-    @task
     def delete(self, dataset):
-        dframe = dataset.observations(as_df=True)
-        slug = dataset.build_labels_to_slugs()[self.name]
-        del dframe[slug]
-        Observation.update(dframe, dataset)
-        super(self.__class__, self).delete({
-            DATASET_ID: self.dataset_id,
-            self.NAME: self.name
-        })
+        call_async(delete_task, self, dataset)
 
     def save(self, dataset, formula, name, group=None):
         """
         Attempt to parse formula, then save formula, and add a task to
         calculate formula.
+
+        Calculations are initial in a **pending** state, after the calculation
+        has finished processing it will be in a **ready** state.
+
+        Raises a ParseError if an invalid formula is supplied.
         """
         calculator = Calculator(dataset)
 
         # ensure that the formula is parsable
-        try:
-            calculator.validate(formula, group)
-        except ParseError, err:
-            # do not save record, return error
-            return {ERROR: err}
+        calculator.validate(formula, group)
 
         record = {
             DATASET_ID: dataset.dataset_id,
             self.FORMULA: formula,
             self.GROUP: group,
             self.NAME: name,
+            self.STATE: self.STATE_PENDING,
         }
-        self.collection.insert(record, safe=True)
+        super(self.__class__, self).save(record)
 
-        dataset.clear_summary_stats()
+        call_async(calculate_task, self, dataset, calculator, formula, name,
+                   group)
+        return record
 
-        # call async calculate
-        call_async(
-            calculator.calculate_column, calculator, formula, name, group)
-
-        self.record = record
-        return self.record
+    @classmethod
+    def create(cls, dataset, formula, name, group=None):
+        calculation = cls()
+        return calculation.save(dataset, formula, name, group)
 
     @classmethod
     def find_one(cls, dataset_id, name):
@@ -83,11 +94,3 @@ class Calculation(AbstractModel):
     @classmethod
     def find(cls, dataset):
         return super(cls, cls).find({DATASET_ID: dataset.dataset_id})
-
-    @classmethod
-    def update(cls, dataset, data):
-        """
-        Update *dataset* with new *data*.
-        """
-        calculator = Calculator(dataset)
-        call_async(calculator.calculate_updates, calculator, data)
