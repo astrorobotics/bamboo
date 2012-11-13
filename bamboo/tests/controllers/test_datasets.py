@@ -34,6 +34,7 @@ class TestDatasets(TestAbstractDatasets):
         TestAbstractDatasets.setUp(self)
         self._file_path = 'tests/fixtures/%s' % self._file_name
         self._file_uri = 'file://%s' % self._file_path
+        self._schema_path = 'tests/fixtures/good_eats.schema.json'
         self.url = 'http://formhub.org/mberg/forms/good_eats/data.csv'
         self._file_name_with_slashes = 'good_eats_with_slashes.csv'
         self.default_formulae = [
@@ -213,6 +214,34 @@ class TestDatasets(TestAbstractDatasets):
             url='http://dsfskfjdks.com'))
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(Datasets.ERROR in result)
+
+    def test_create_no_url_or_csv(self):
+        result = json.loads(self.controller.create())
+        self.assertTrue(isinstance(result, dict))
+        self.assertTrue(Datasets.ERROR in result)
+
+    def test_create_from_schema(self):
+        schema = open(self._schema_path)
+        mock_uploaded_file = MockUploadedFile(schema)
+        result = json.loads(
+            self.controller.create(schema=mock_uploaded_file))
+        self.assertTrue(isinstance(result, dict))
+        self.assertTrue(Dataset.ID in result)
+        dataset_id = result[Dataset.ID]
+        self._test_summary_built(result)
+        results = json.loads(self.controller.show(self.dataset_id))
+        self.assertTrue(isinstance(results, list))
+        self.assertEqual(len(results), 0)
+        self._post_file()
+        results = json.loads(self.controller.info(dataset_id))
+        self.assertTrue(isinstance(results, dict))
+        self.assertTrue(Dataset.SCHEMA in results.keys())
+        self.assertTrue(Dataset.NUM_ROWS in results.keys())
+        self.assertEqual(results[Dataset.NUM_ROWS], 0)
+        self.assertTrue(Dataset.NUM_COLUMNS in results.keys())
+        self.assertEqual(results[Dataset.NUM_COLUMNS], self.NUM_COLS)
+
+    # TODO: test various create from schema errors
 
     def test_merge_datasets_0_not_enough(self):
         result = json.loads(self.controller.merge(datasets=json.dumps([])))
@@ -687,3 +716,81 @@ class TestDatasets(TestAbstractDatasets):
         results = self.controller.show(self.dataset_id, callback='jsonp')
         self.assertEqual('jsonp(', results[0:6])
         self.assertEqual(')', results[-1])
+
+    def test_drop_columns(self):
+        self._post_file()
+        results = json.loads(
+            self.controller.drop_columns(self.dataset_id, ['food_type']))
+        self.assertTrue(isinstance(results, dict))
+        self.assertTrue(AbstractController.SUCCESS in results)
+        self.assertTrue('dropped' in results[AbstractController.SUCCESS])
+        results = json.loads(self.controller.show(self.dataset_id))
+        self.assertTrue(isinstance(results, list))
+        self.assertTrue(isinstance(results[0], dict))
+        self.assertEqual(len(results[0].keys()), self.NUM_COLS - 1)
+
+    def test_drop_columns_non_existent_id(self):
+        results = json.loads(
+            self.controller.drop_columns('313514', ['food_type']))
+        self.assertTrue(isinstance(results, dict))
+        self.assertTrue(AbstractController.ERROR in results)
+
+    def test_drop_columns_non_existent_column(self):
+        self._post_file()
+        results = json.loads(
+            self.controller.drop_columns(self.dataset_id, ['foo']))
+        self.assertTrue(isinstance(results, dict))
+        self.assertTrue(AbstractController.ERROR in results)
+
+    def test_join_datasets(self):
+        self._post_file()
+        left_dataset_id = self.dataset_id
+        self._post_file('good_eats_aux.csv')
+        on = 'food_type'
+        results = json.loads(self.controller.join(
+            left_dataset_id, self.dataset_id, on=on))
+        self.assertTrue(isinstance(results, dict))
+        self.assertTrue(AbstractController.SUCCESS in results.keys())
+        self.assertTrue(Dataset.ID in results.keys())
+        joined_dataset_id = results[Dataset.ID]
+        data = json.loads(self.controller.show(joined_dataset_id))
+        self.assertTrue('code' in data[0].keys())
+        left_dataset = Dataset.find_one(left_dataset_id)
+        right_dataset = Dataset.find_one(self.dataset_id)
+        self.assertEqual([('right', self.dataset_id, on, joined_dataset_id)],
+                         left_dataset.joined_dataset_ids)
+        self.assertEqual([('left', left_dataset_id, on, joined_dataset_id)],
+                         right_dataset.joined_dataset_ids)
+
+    def test_join_datasets_non_unique_rhs(self):
+        self._post_file()
+        left_dataset_id = self.dataset_id
+        self._post_file()
+        results = json.loads(self.controller.join(
+            left_dataset_id, self.dataset_id, on='food_type'))
+        self.assertTrue(isinstance(results, dict))
+        self.assertTrue(AbstractController.ERROR in results.keys())
+        self.assertTrue('right' in results[AbstractController.ERROR])
+        self.assertTrue('not unique' in results[AbstractController.ERROR])
+
+    def test_join_datasets_on_col_not_in_lhs(self):
+        self._post_file()
+        left_dataset_id = self.dataset_id
+        self._post_file('good_eats_aux.csv')
+        on = 'code'
+        results = json.loads(self.controller.join(
+            left_dataset_id, self.dataset_id, on=on))
+        self.assertTrue(isinstance(results, dict))
+        self.assertTrue(AbstractController.ERROR in results.keys())
+        self.assertTrue('left' in results[AbstractController.ERROR])
+
+    def test_join_datasets_on_col_not_in_rhs(self):
+        self._post_file()
+        left_dataset_id = self.dataset_id
+        self._post_file('good_eats_aux.csv')
+        on = 'rating'
+        results = json.loads(self.controller.join(
+            left_dataset_id, self.dataset_id, on=on))
+        self.assertTrue(isinstance(results, dict))
+        self.assertTrue(AbstractController.ERROR in results.keys())
+        self.assertTrue('right' in results[AbstractController.ERROR])

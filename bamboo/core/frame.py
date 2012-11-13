@@ -17,13 +17,21 @@ BAMBOO_RESERVED_KEYS = [
 ]
 
 
+class NonUniqueJoinError(Exception):
+    pass
+
+
 class BambooFrame(DataFrame):
+    """Add Bamboo related functionality to DataFrame class."""
+
     def add_parent_column(self, parent_dataset_id):
+        """Add parent ID column to this DataFrame."""
         column = Series([parent_dataset_id] * len(self))
         column.name = PARENT_DATASET_ID
         return self.__class__(self.join(column))
 
     def decode_mongo_reserved_keys(self):
+        """Decode MongoDB reserved keys in this DataFrame."""
         reserved_keys = self._column_intersect(MONGO_RESERVED_KEYS)
         for key in reserved_keys:
             del self[key]
@@ -32,6 +40,11 @@ class BambooFrame(DataFrame):
                 self.rename(columns={prefixed_key: key}, inplace=True)
 
     def remove_bamboo_reserved_keys(self, keep_parent_ids=False):
+        """Remove reserved internal columns in this DataFrame.
+
+        Args:
+            keep_parent_ids: Keep parent column if True, default False.
+        """
         reserved_keys = self._column_intersect(BAMBOO_RESERVED_KEYS)
         if keep_parent_ids and PARENT_DATASET_ID in reserved_keys:
             reserved_keys.remove(PARENT_DATASET_ID)
@@ -39,18 +52,42 @@ class BambooFrame(DataFrame):
             del self[column]
 
     def only_rows_for_parent_id(self, parent_id):
+        """DataFrame with only rows for *parent_id*.
+
+        Args:
+            parent_id: The ID to restrict rows to.
+
+        Returns:
+            A DataFrame including only rows with a parent ID equal to that
+            passed in.
+        """
         return self[self[PARENT_DATASET_ID] == parent_id].drop(
             PARENT_DATASET_ID, 1)
 
     def to_jsondict(self):
-        return [series_to_jsondict(series) for idx, series in self.iterrows()]
+        """Return DataFrame as a list of dicts for each row."""
+        return [series_to_jsondict(series) for _, series in self.iterrows()]
 
     def to_json(self):
-        """
-        Convert mongo *cursor* to json dict, via dataframe, then dump to JSON.
-        """
+        """Convert DataFrame to a list of dicts, then dump to JSON."""
         jsondict = self.to_jsondict()
         return dump_mongo_json(jsondict)
 
     def _column_intersect(self, _list):
+        """Return the intersection of *_list* and this DataFrame's columns."""
         return list(set(_list).intersection(set(self.columns.tolist())))
+
+    def join_dataset(self, other, on):
+        """Left join an *other* dataset."""
+        right_dframe = other.dframe()
+
+        if on not in self.columns:
+            raise KeyError('no item named %s in left hand side dataset' % on)
+        if on not in right_dframe.columns:
+            raise KeyError('no item named %s in right hand side dataset' % on)
+
+        right_dframe = right_dframe.set_index(on)
+        if len(right_dframe.index) != len(right_dframe.index.unique()):
+            raise NonUniqueJoinError('The join column (%s) of the right hand s'
+                                     'ide dataset is not unique' % on)
+        return self.__class__(self.join(right_dframe, on=on))

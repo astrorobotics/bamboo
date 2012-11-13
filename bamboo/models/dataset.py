@@ -1,18 +1,20 @@
-import json
+from math import ceil
+import simplejson as json
 import uuid
 from time import gmtime, strftime
 
 from celery.task import task
 from celery.contrib.methods import task as class_task
-import numpy as np
+from pandas import concat
 
+from bamboo.config.settings import DB_READ_BATCH_SIZE
 from bamboo.core.calculator import Calculator
 from bamboo.core.frame import BambooFrame, BAMBOO_RESERVED_KEY_PREFIX,\
     DATASET_ID, DATASET_OBSERVATION_ID, PARENT_DATASET_ID
 from bamboo.core.summary import summarize
 from bamboo.lib.mongo import reserve_encoded
 from bamboo.lib.schema_builder import DIMENSION, OLAP_TYPE,\
-    schema_from_data_and_dtypes, SIMPLETYPE
+    schema_from_data_and_dtypes
 from bamboo.lib.utils import call_async, split_groups
 from bamboo.models.abstract_model import AbstractModel
 from bamboo.models.calculation import Calculation
@@ -21,6 +23,7 @@ from bamboo.models.observation import Observation
 
 @task
 def delete_task(dataset):
+    """Background task to delete dataset and its associated observations."""
     Observation.delete_all(dataset)
     super(dataset.__class__, dataset).delete({DATASET_ID: dataset.dataset_id})
 
@@ -40,6 +43,7 @@ class Dataset(AbstractModel):
     CREATED_AT = 'created_at'
     DESCRIPTION = 'description'
     ID = 'id'
+    JOINED_DATASETS = 'joined_datasets'
     LABEL = 'label'
     LICENSE = 'license'
     NUM_COLUMNS = 'num_columns'
@@ -75,12 +79,31 @@ class Dataset(AbstractModel):
                      self.aggregated_datasets_dict.items()])
 
     @property
+    def joined_dataset_ids(self):
+        return [
+            tuple(_list) for _list in self.record.get(self.JOINED_DATASETS, [])
+        ]
+
+    @property
+    def joined_datasets(self):
+        result = []
+        # TODO: fetch all datasets in single DB call
+        return [
+            (direction, self.find_one(other_dataset_id), on,
+             self.find_one(joined_dataset_id))
+            for direction, other_dataset_id, on, joined_dataset_id in
+            self.joined_dataset_ids]
+
+    @property
     def merged_dataset_ids(self):
         return self.record.get(self.MERGED_DATASETS, [])
 
     @property
     def merged_datasets(self):
-        return [self.find_one(_id) for _id in self.merged_dataset_ids]
+        return self._linked_datasets(self.merged_dataset_ids)
+
+    def _linked_datasets(self, ids):
+        return [self.find_one(_id) for _id in ids]
 
     def is_factor(self, col):
         return self.schema[col][OLAP_TYPE] == DIMENSION
@@ -91,35 +114,80 @@ class Dataset(AbstractModel):
 
     def dframe(self, query=None, select=None, keep_parent_ids=False,
                limit=0, order_by=None):
-        observations = self.observations(query=query, select=select,
-                                         limit=limit, order_by=order_by)
-        dframe = BambooFrame(observations)
+        """Fetch the dframe for this dataset.
+
+        Args:
+
+        - query: An optional MongoDB query to limit the rows for the dframe.
+        - select: An optional select to limit the fields in the dframe.
+        - keep_parent_ids: Do not remove parent IDs from the dframe, default
+          False.
+        - limit: Limit on the number of rows in the returned dframe.
+        - order_by: Sort resulting rows according to a column value and sign
+          indicating ascending or descending. For example:
+
+          - ``order_by='mycolumn'``
+          - ``order_by='-mycolumn'``
+
+        Returns:
+            Return BambooFrame with contents based on query parameters passed
+            to MongoDB. BambooFrame will not have parent ids if
+            *keep_parent_ids* is False.
+        """
+        observations = self.observations(
+            query=query, select=select, limit=limit, order_by=order_by,
+            as_cursor=True)
+
+        batches = int(ceil(float(observations.count(with_limit_and_skip=True))
+                      / DB_READ_BATCH_SIZE))
+        dframes = []
+
+        for batch in xrange(0, batches):
+            start = batch * DB_READ_BATCH_SIZE
+            end = (batch + 1) * DB_READ_BATCH_SIZE
+            if limit > 0 and end > limit:
+                end = limit
+            dframes.append(BambooFrame([ob for ob in observations[start:end]]))
+            observations.rewind()
+
+        dframe = BambooFrame(concat(dframes) if len(dframes) else [])
         dframe.decode_mongo_reserved_keys()
         dframe.remove_bamboo_reserved_keys(keep_parent_ids)
         return dframe
 
+    def add_joined_dataset(self, new_data):
+        """Add the ID of *new_dataset* to the list of joined datasets."""
+        self._add_linked_data(self.JOINED_DATASETS, self.joined_dataset_ids,
+                              new_data)
+
     def add_merged_dataset(self, new_dataset):
-        self.update({
-            self.MERGED_DATASETS: self.merged_datasets +
-            [new_dataset.dataset_id]})
+        """Add the ID of *new_dataset* to the list of merged datasets."""
+        self._add_linked_data(self.MERGED_DATASETS, self.merged_dataset_ids,
+                              new_dataset.dataset_id)
+
+    def _add_linked_data(self, link_key, existing_data, new_data):
+        self.update({link_key: existing_data + [new_data]})
 
     def clear_summary_stats(self, field=ALL):
-        """
-        Invalidate summary stats for *field*.
-        """
+        """Remove summary stats for *field*."""
         stats = self.stats
         if stats:
             stats.pop(field, None)
             self.update({self.STATS: stats})
 
     def save(self, dataset_id=None):
-        """
-        Store dataset with *dataset_id* as the unique internal ID.
-        Create a new dataset_id if one is not passed.
+        """Store dataset with *dataset_id* as the unique internal ID.
 
-        Datasets are initially in a **pending** state.  After the dataset has
-        been uploaded and inserted into the database it is in a **ready** state
-        .
+        Store a new dataset with an ID given by *dataset_id* is exists,
+        otherwise reate a random UUID for this dataset. Additionally, set the
+        created at time to the current time and the state to pending.
+
+        Args:
+
+        - dataset_id: The ID to store for this dataset, default is None.
+
+        Returns:
+            A dict representing this dataset.
         """
         if dataset_id is None:
             dataset_id = uuid.uuid4().hex
@@ -134,17 +202,29 @@ class Dataset(AbstractModel):
         return super(self.__class__, self).save(record)
 
     def delete(self):
+        """Delete this dataset."""
         call_async(delete_task, self)
 
     @class_task
     def summarize(self, query=None, select=None,
                   group_str=None, limit=0, order_by=None):
-        """
-        Return a summary for the rows/values filtered by *query* and *select*
-        and grouped by *group_str* or the overall summary if no group is
+        """Build and return a summary of the data in this dataset.
+
+        Return a summary of the rows/values filtered by *query* and *select*
+        and grouped by *group_str*, or the overall summary if no group is
         specified.
 
-        *group_str* may be a string of many comma separated groups.
+        Args:
+
+        - query: An optional MongoDB query to limit the data summarized.
+        - select: An optional select to limit the columns summarized.
+        - group_str: A column in the dataset as a string or a list comma
+          separated columns to group on.
+
+        Returns:
+            A JSON summary of the dataset. Numeric columns will be summarized
+            by the arithmetic mean, standard deviation, and percentiles.
+            Dimensional columns will be summarized by counts.
         """
         # interpret none as all
         if not group_str:
@@ -159,7 +239,6 @@ class Dataset(AbstractModel):
             select.update(dict(zip(groups, [1] * len(groups))))
             select = json.dumps(select)
 
-        # narrow list of observations via query/select
         dframe = self.dframe(query=query, select=select,
                              limit=limit, order_by=order_by)
 
@@ -167,28 +246,30 @@ class Dataset(AbstractModel):
 
     @classmethod
     def find_one(cls, dataset_id):
+        """Return dataset for *dataset_id*."""
         return super(cls, cls).find_one({DATASET_ID: dataset_id})
 
     @classmethod
     def find(cls, dataset_id):
+        """Return datasets for *dataset_id*."""
         return super(cls, cls).find({DATASET_ID: dataset_id})
 
     def update(self, record):
-        """
-        Update dataset *dataset* with *record*.
-        """
+        """Update dataset *dataset* with *record*."""
         record[self.UPDATED_AT] = strftime("%Y-%m-%d %H:%M:%S", gmtime())
         super(self.__class__, self).update(record)
-        self.record = self.__class__.find_one(self.dataset_id).record
 
     def build_schema(self, dframe):
-        """
-        Build schema for a dataset.
-        """
+        """Build schema for a dataset."""
         schema = schema_from_data_and_dtypes(self, dframe)
         self.update({self.SCHEMA: schema})
 
+    def set_schema(self, schema):
+        """Set the schema from an existing one."""
+        self.update({self.SCHEMA: schema})
+
     def info(self):
+        """Return meta-data for this dataset."""
         return {
             self.ID: self.dataset_id,
             self.LABEL: '',
@@ -203,42 +284,85 @@ class Dataset(AbstractModel):
         }
 
     def build_labels_to_slugs(self):
-        """
-        Map the column labels back to their slugified versions
-        """
+        """Build dict from column labels to slugs."""
         return dict([
             (column_attrs[self.LABEL], reserve_encoded(column_name)) for
             (column_name, column_attrs) in self.schema.items()])
 
-    def observations(self, query=None, select=None, limit=0, order_by=None):
-        return Observation.find(self, query, select,
-                                limit=limit, order_by=order_by)
+    def observations(self, query=None, select=None, limit=0, order_by=None,
+                     as_cursor=False):
+        """Return observations for this dataset.
+
+        Args:
+
+        - query: Optional query for MongoDB to limit rows returned.
+        - select: Optional select for MongoDB to limit columns.
+        - limit: If greater than 0, limit number of observations returned to
+          this maximum.
+        - order_by: Order the returned observations.
+
+        """
+        return Observation.find(self, query, select, limit=limit,
+                                order_by=order_by, as_cursor=as_cursor)
 
     def calculations(self):
+        """Return the calculations for this dataset."""
         return Calculation.find(self)
 
     def remove_parent_observations(self, parent_id):
+        """Remove obervations for this dataset with the passed *parent_id*.
+
+        Args:
+
+        - parent_id: Remove observations with this ID as their parent dataset
+          ID.
+
+        """
         Observation.delete_all(self, {PARENT_DATASET_ID: parent_id})
 
     def add_observations(self, json_data):
-        """
-        Update *dataset* with new *data*.
-        """
+        """Update *dataset* with new *data*."""
         calculator = Calculator(self)
         call_async(calculator.calculate_updates, calculator,
                    json.loads(json_data))
 
     def save_observations(self, dframe):
-        """
-        Save rows in *dframe* for this dataset.
-        """
+        """Save rows in *dframe* for this dataset."""
         Observation().save(dframe, self)
         return self.dframe()
 
     def replace_observations(self, dframe):
-        """
-        Remove all rows for this dataset and save the rows in *dframe*.
+        """Remove all rows for this dataset and save the rows in *dframe*.
+
+        Args:
+
+        - dframe: Replace rows in this dataset with this DataFrame's rows.
+
+        Returns:
+            BambooFrame equivalent to the passed in *dframe*.
         """
         self.build_schema(dframe)
         Observation.delete_all(self)
         return self.save_observations(dframe)
+
+    def drop_columns(self, columns):
+        """Remove columns from this dataset's observations.
+
+        Args:
+
+        - columns: List of columns to remove from this dataset.
+
+        """
+        dframe = self.dframe(keep_parent_ids=True)
+        self.replace_observations(dframe.drop(columns, axis=1))
+
+    def join(self, other, on):
+        merged_dframe = self.dframe().join_dataset(other, on)
+        merged_dataset = self.__class__()
+        merged_dataset.save()
+        merged_dataset.save_observations(merged_dframe)
+        self.add_joined_dataset(
+            ('right', other.dataset_id, on, merged_dataset.dataset_id))
+        other.add_joined_dataset(
+            ('left', self.dataset_id, on, merged_dataset.dataset_id))
+        return merged_dataset

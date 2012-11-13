@@ -2,17 +2,34 @@ from celery.task import task
 
 from bamboo.core.calculator import Calculator
 from bamboo.core.frame import DATASET_ID
-from bamboo.core.parser import Parser, ParserContext
+from bamboo.core.parser import Parser
 from bamboo.lib.utils import call_async
 from bamboo.models.abstract_model import AbstractModel
 
 
+class DependencyError(Exception):
+    pass
+
+
 @task
 def delete_task(calculation, dataset):
-    dframe = dataset.dframe()
+    """Background task to delete *calculation* and columns in its dataset.
+
+    Args:
+
+    - calculation: Calculation to delete.
+    - dataset: Dataset for this calculation.
+
+    """
+    if not calculation.group is None:
+        # it is an aggregate calculation
+        dataset = dataset.aggregated_datasets[calculation.group]
+
+    dframe = dataset.dframe(keep_parent_ids=True)
     slug = dataset.build_labels_to_slugs()[calculation.name]
     del dframe[slug]
     dataset.replace_observations(dframe)
+    calculation.remove_dependencies()
     super(calculation.__class__, calculation).delete({
         DATASET_ID: calculation.dataset_id,
         calculation.NAME: calculation.name
@@ -20,9 +37,26 @@ def delete_task(calculation, dataset):
 
 
 @task
-def calculate_task(calculation, dataset, calculator, formula, name, group):
+def calculate_task(calculation, dataset, calculator):
+    """Background task to run a calculation.
+
+    Args:
+
+    - calculation: Calculation to run.
+    - dataset: Dataset to run calculation on.
+    - calculator: Calculator model instantiated for this dataset.
+    """
     dataset.clear_summary_stats()
-    calculator.calculate_column(formula, name, group)
+    calculator.calculate_column(calculation.formula, calculation.name,
+                                calculation.group)
+    dataset_calcs = dataset.calculations()
+    dataset_calc_names = [calc.name for calc in dataset_calcs]
+    names_to_calcs = dict([(calc.name, calc) for calc in dataset_calcs])
+    for column_name in calculator.parser.context.dependent_columns:
+        calc = names_to_calcs.get(column_name)
+        if calc:
+            calculation.add_dependency(calc.name)
+            calc.add_dependent_calculation(calculation.name)
     calculation.ready()
 
 
@@ -31,40 +65,99 @@ class Calculation(AbstractModel):
     __collectionname__ = 'calculations'
     parser = Parser()
 
+    DEPENDENCIES = 'dependencies'
+    DEPENDENT_CALCULATIONS = 'dependent_calculations'
     FORMULA = 'formula'
     GROUP = 'group'
     NAME = 'name'
-    QUERY = 'query'
 
     @property
     def dataset_id(self):
         return self.record[DATASET_ID]
 
     @property
+    def formula(self):
+        return self.record[self.FORMULA]
+
+    @property
+    def group(self):
+        return self.record[self.GROUP]
+
+    @property
     def name(self):
         return self.record[self.NAME]
 
     @property
-    def formula(self):
-        return self.record[self.FORMULA]
+    def dependencies(self):
+        return self.record.get(self.DEPENDENCIES, [])
+
+    @property
+    def dependent_calculations(self):
+        return self.record.get(self.DEPENDENT_CALCULATIONS, [])
+
+    def add_dependency(self, name):
+        self._add_and_update_set(self.DEPENDENCIES, self.dependencies, name)
+
+    def add_dependent_calculation(self, name):
+        self._add_and_update_set(self.DEPENDENT_CALCULATIONS,
+                                 self.dependent_calculations, name)
+
+    def _add_and_update_set(self, link_key, existing, new):
+        new_list = list(set(existing + [new]))
+        if new_list != existing:
+            self.update({link_key: new_list})
+
+    def remove_dependent_calculation(self, name):
+        new_dependent_calcs = self.dependent_calculations
+        new_dependent_calcs.remove(name)
+        self.update({self.DEPENDENT_CALCULATIONS: new_dependent_calcs})
+
+    def remove_dependencies(self):
+        for name in self.dependencies:
+            calculation = self.find_one(self.dataset_id, name)
+            calculation.remove_dependent_calculation(self.name)
 
     def delete(self, dataset):
+        """Delete this calculation.
+
+        First ensure that there are no other calculations which depend on this
+        one. If not, start a background task to delete the calculation.
+
+        Args:
+
+        - dataset: Dataset for this calculation.
+
+        Raises:
+            DependencyError: If dependent calculations exist.
+        """
+        if len(self.dependent_calculations):
+            raise DependencyError(
+                'Cannot delete, the calculations %s depend on this calculation'
+                % self.dependent_calculations)
         call_async(delete_task, self, dataset)
 
     def save(self, dataset, formula, name, group=None):
-        """
-        Attempt to parse formula, then save formula, and add a task to
-        calculate formula.
+        """Parse, save, and calculate a formula.
 
-        Calculations are initial in a **pending** state, after the calculation
-        has finished processing it will be in a **ready** state.
+        Validate *formula* and *group* for the given *dataset*. If the formula
+        and group are valid for the dataset, then save a new calculation for
+        them under *name*. Finally, create a background task to compute the
+        calculation.
 
-        Raises a ParseError if an invalid formula is supplied.
+        Calculations are initially saved in a **pending** state, after the
+        calculation has finished processing it will be in a **ready** state.
+
+        Raises:
+            ParseError: An invalid formula was supplied.
         """
         calculator = Calculator(dataset)
 
         # ensure that the formula is parsable
-        calculator.validate(formula, group)
+        aggregation = calculator.validate(formula, group)
+
+        # set group if aggregation and group unset
+        if aggregation and not group:
+            group = ''
 
         record = {
             DATASET_ID: dataset.dataset_id,
@@ -75,8 +168,7 @@ class Calculation(AbstractModel):
         }
         super(self.__class__, self).save(record)
 
-        call_async(calculate_task, self, dataset, calculator, formula, name,
-                   group)
+        call_async(calculate_task, self, dataset, calculator)
         return record
 
     @classmethod
@@ -85,11 +177,14 @@ class Calculation(AbstractModel):
         return calculation.save(dataset, formula, name, group)
 
     @classmethod
-    def find_one(cls, dataset_id, name):
-        return super(cls, cls).find_one({
+    def find_one(cls, dataset_id, name, group=None):
+        query = {
             DATASET_ID: dataset_id,
             cls.NAME: name,
-        })
+        }
+        if group:
+            query[cls.GROUP] = group
+        return super(cls, cls).find_one(query)
 
     @classmethod
     def find(cls, dataset):

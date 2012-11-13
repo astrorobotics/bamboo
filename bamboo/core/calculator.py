@@ -4,31 +4,48 @@ from celery.task import task
 from pandas import concat
 
 from bamboo.core.aggregator import Aggregator
-from bamboo.core.frame import BambooFrame
+from bamboo.core.frame import BambooFrame, NonUniqueJoinError
 from bamboo.core.parser import ParseError, Parser
-from bamboo.lib.datetools import recognize_dates, recognize_dates_from_schema
+from bamboo.lib.datetools import recognize_dates_from_schema
 from bamboo.lib.mongo import MONGO_RESERVED_KEYS
 from bamboo.lib.utils import call_async, split_groups
 
 
 class Calculator(object):
+    """Perform and store calculations and recalculations on update."""
 
     calcs_to_data = None
+    dframe = None
 
     def __init__(self, dataset):
         self.dataset = dataset
         self.parser = Parser(dataset)
 
     def ensure_dframe(self):
-        if not hasattr(self, 'dframe'):
+        """Ensure *dframe* for the calculator's dataset is defined."""
+        if not self.dframe:
             self.dframe = self.dataset.dframe()
 
     def validate(self, formula, group_str):
-        # attempt to get a row from the dataframe
+        """Validate *formula* and *group_str* for calculator's dataset.
+
+        Validate the formula and group string by attempting to get a row from
+        the dframe for the dataset and then running parser validation on this
+        row. Additionally, ensure that the groups in the group string are
+        columns in the dataset.
+
+        Args:
+
+        - formula: The formula to validate.
+        - group_str: A string of a group or comma separated groups.
+
+        Returns:
+            The aggregation (or None) for the formula.
+        """
         dframe = self.dataset.dframe(limit=1)
         row = dframe.irow(0) if len(dframe) else {}
 
-        self.parser.validate_formula(formula, row)
+        aggregation = self.parser.validate_formula(formula, row)
 
         if group_str:
             groups = split_groups(group_str)
@@ -36,11 +53,11 @@ class Calculator(object):
                 if not group in dframe.columns:
                     raise ParseError(
                         'Group %s not in dataset columns.' % group)
+        return aggregation
 
     def calculate_column(self, formula, name, group_str=None):
-        """
-        Calculate a new column based on *formula* store as *name*.
-        The *fomula* is parsed by *self.parser* and applied to *self.dframe*.
+        """Calculate a new column based on *formula* store as *name*.
+
         The new column is joined to *dframe* and stored in *self.dataset*.
         The *group_str* is only applicable to aggregations and groups for
         aggregations.
@@ -51,10 +68,19 @@ class Calculator(object):
         - updating ``controllers.Datasets.POST([dataset_id])``
 
         Therefore, perform these actions asychronously.
+
+        Args:
+
+        - formula: The formula parsed by *self.parser* and applied to
+          *self.dframe*.
+        - name: The name of the new column or aggregate column.
+        - group_str: A string or columns to group on for aggregate
+          calculations.
+
         """
         self.ensure_dframe()
 
-        aggregation, new_columns = self._make_columns(formula, name)
+        aggregation, new_columns = self.make_columns(formula, name)
 
         if aggregation:
             agg = Aggregator(self.dataset, self.dframe,
@@ -66,13 +92,19 @@ class Calculator(object):
         # propagate calculation to any merged child datasets
         for merged_dataset in self.dataset.merged_datasets:
             merged_calculator = Calculator(merged_dataset)
-            merged_calculator._propagate_column(self.dataset)
+            merged_calculator.propagate_column(self.dataset)
 
-    def _propagate_column(self, parent_dataset):
-        """
-        This is called when there has been a new calculation added to
+    def propagate_column(self, parent_dataset):
+        """Propagate columns in *parent_dataset* to this dataset.
+
+        This is used when there has been a new calculation added to
         a dataset and that new column needs to be propagated to all
         child (merged) datasets.
+
+        Args:
+
+        - parent_dataset: The dataset to propagate to *self.dataset*.
+
         """
         # delete the rows in this dataset from the parent
         self.dataset.remove_parent_observations(parent_dataset.dataset_id)
@@ -93,12 +125,11 @@ class Calculator(object):
         # recur
         for merged_dataset in self.dataset.merged_datasets:
             merged_calculator = Calculator(merged_dataset)
-            merged_calculator._propagate_column(self.dataset)
+            merged_calculator.propagate_column(self.dataset)
 
     @task
     def calculate_updates(self, new_data, parent_dataset_id=None):
-        """
-        Update dataset with *new_data*.
+        """Update dataset with *new_data*.
 
         This can result in race-conditions when:
 
@@ -106,17 +137,40 @@ class Calculator(object):
         - updating ``controllers.Datasets.POST([dataset_id])``
 
         Therefore, perform these actions asychronously.
+
+        Args:
+
+        - new_data: Data to update this dataset with.
+        - parent_dataset_id: If passed add ID as parent ID to column, default
+          is None.
+
         """
         self.ensure_dframe()
 
         calculations = self.dataset.calculations()
         labels_to_slugs = self.dataset.build_labels_to_slugs()
-        new_dframe = self._dframe_from_update(new_data, labels_to_slugs)
+        new_dframe_raw = self._dframe_from_update(new_data, labels_to_slugs)
+
+        # check whether this is a right-hand side of any joins
+        # and deny the update if the update would produce an invalid
+        # join as a result
+        if any([direction == 'left' for direction, _, on, __ in
+                self.dataset.joined_datasets]):
+            if on in new_dframe_raw.columns:
+                merged_join_column = concat(
+                    [new_dframe_raw[on], self.dframe[on]])
+                if len(merged_join_column) != merged_join_column.nunique():
+                    raise NonUniqueJoinError(
+                        'Cannot update. This is the right hand join and the'
+                        'column "%s" will become non-unique.' % on)
+
+        new_dframe = recognize_dates_from_schema(
+            self.dataset.schema, new_dframe_raw)
 
         aggregate_calculations = []
 
         for calculation in calculations:
-            aggregation, function =\
+            _, function =\
                 self.parser.parse_formula(calculation.formula)
             new_column = new_dframe.apply(function[0], axis=1,
                                           args=(self.parser.context, ))
@@ -164,10 +218,25 @@ class Calculator(object):
             call_async(merged_calculator.calculate_updates, merged_calculator,
                        slugified_data, self.dataset.dataset_id)
 
-    def _make_columns(self, formula, name, dframe=None):
-        """
-        Parse formula into function and variables
-        """
+        # update any joined datasets
+        for direction, other_dataset, on, joined_dataset in\
+                self.dataset.joined_datasets:
+            if direction == 'left':
+                merged_dframe = other_dataset.dframe().join_dataset(
+                    self.dataset, on)
+                joined_dataset.replace_observations(merged_dframe)
+            else:
+                merged_dframe = new_dframe_raw
+                if on in merged_dframe:
+                    merged_dframe = new_dframe_raw.join_dataset(
+                        other_dataset, on)
+                joined_calculator = Calculator(joined_dataset)
+                call_async(joined_calculator.calculate_updates,
+                           joined_calculator, merged_dframe.to_jsondict(),
+                           self.dataset.dataset_id)
+
+    def make_columns(self, formula, name, dframe=None):
+        """Parse formula into function and variables."""
         if dframe is None:
             dframe = self.dframe
 
@@ -183,9 +252,7 @@ class Calculator(object):
         return aggregation, new_columns
 
     def _dframe_from_update(self, new_data, labels_to_slugs):
-        """
-        Make a single-row dataframe for the additional data to add
-        """
+        """Make a single-row dataframe for the additional data to add."""
         if not isinstance(new_data, list):
             new_data = [new_data]
 
@@ -201,8 +268,7 @@ class Calculator(object):
                         col not in filtered_row.keys():
                     filtered_row[col] = val
             filtered_data.append(filtered_row)
-        return recognize_dates_from_schema(self.dataset,
-                                           BambooFrame(filtered_data))
+        return BambooFrame(filtered_data)
 
     def _update_aggregate_datasets(self, calculations, new_dframe):
         if not self.calcs_to_data:
@@ -214,16 +280,18 @@ class Calculator(object):
 
     def _update_aggregate_dataset(self, formula, new_dframe, name, group,
                                   agg_dataset):
-        """
-        Update the aggregated dataset built for *self* with *calculation*.
+        """Update the aggregated dataset built for *self* with *calculation*.
 
-        - delete the rows in this dataset from the parent
-        - recalculate aggregated dataframe from aggregation
-        - update aggregated dataset with new dataframe and add parent id
-        - recur on all merged datasets descending from the aggregated dataset
+        Proceed with the following steps:
+
+            - delete the rows in this dataset from the parent
+            - recalculate aggregated dataframe from aggregation
+            - update aggregated dataset with new dataframe and add parent id
+            - recur on all merged datasets descending from the aggregated
+              dataset
 
         """
-        aggregation, new_columns = self._make_columns(
+        aggregation, new_columns = self.make_columns(
             formula, name, new_dframe)
 
         agg = Aggregator(self.dataset, self.dframe,
@@ -244,10 +312,7 @@ class Calculator(object):
                        new_data, agg_dataset.dataset_id)
 
     def _create_calculations_to_groups_and_datasets(self, calculations):
-        """
-        Create list of groups and calculations.
-        TODO: cleanup this function.
-        """
+        """Create list of groups and calculations."""
         self.calcs_to_data = defaultdict(list)
         names_to_formulas = dict([(calc.name, calc.formula) for calc in
                                   calculations])
@@ -264,9 +329,7 @@ class Calculator(object):
         ]
 
     def __getstate__(self):
-        """
-        Get state for pickle.
-        """
+        """Get state for pickle."""
         return [self.dataset, self.parser]
 
     def __setstate__(self, state):

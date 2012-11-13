@@ -11,45 +11,62 @@ from bamboo.core.operations import EvalAndOp, EvalCaseOp, EvalComparisonOp,\
 
 
 class ParseError(Exception):
-    """
-    For errors while parsing formulas.
-    """
+    """For errors while parsing formulas."""
     pass
 
 
 class ParserContext(object):
-    """
-    Context to be passed into parser.
-    """
+    """Context to be passed into parser."""
 
-    def __init__(self, dataset):
-        self.schema = dataset.schema
+    dependent_columns = set()
+    schema = None
+
+    def __init__(self, dataset=None):
+        if dataset:
+            self.schema = dataset.schema
 
 
 class Parser(object):
-    """
-    Class for parsing and evaluating formula.
+    """Class for parsing and evaluating formula.
+
+    Attributes:
+
+    - aggregation: Aggregation parsed from formula.
+    - aggregation_names: Possible aggregations.
+    - bnf: Cached Backus-Naur Form of formula.
+    - column_functions: Cached additional columns as aggregation parameters.
+    - function_names: Names of possible functions in formulas.
+    - operator_names: Names of possible operators in formulas.
+    - parsed_expr: Cached parsed expression.
+    - special_names: Names of possible reserved names in formulas.
+    - reserved_words: List of all possible reserved words that may be used in
+      formulas.
     """
 
     aggregation = None
-    bnf = None
     aggregation_names = AGGREGATIONS.keys()
+    bnf = None
+    column_functions = None
     function_names = ['date', 'years']
     operator_names = ['and', 'or', 'not', 'in']
+    parsed_expr = None
     special_names = ['default']
     reserved_words = aggregation_names + function_names + operator_names +\
         special_names
 
     def __init__(self, dataset=None):
-        self.context = ParserContext(dataset) if dataset else None
-        self.BNF()
+        """Create parser and set context."""
+        self.context = ParserContext(dataset)
+        self._build_bnf()
 
-    def store_aggregation(self, string, location, tokens):
+    def store_aggregation(self, _, __, tokens):
+        """Cached a parsed aggregation."""
         self.aggregation = tokens[0]
         self.column_functions = tokens[1:]
 
-    def BNF(self):
-        """
+    def _build_bnf(self):
+        """Parse formula to function based on language definition.
+
         Backus-Naur Form of formula language:
 
         =========   ==========
@@ -79,51 +96,6 @@ class Parser(object):
         case        'case' disj: atom[, disj: atom]*[, 'default': atom]
         agg         agg ( case[, case]* )
         =========   ==========
-
-        Examples:
-
-        - constants
-            - ``9 + 5``,
-        - aliases
-            - ``rating``,
-            - ``gps``,
-        - arithmetic
-            - ``amount + gps_alt``,
-            - ``amount - gps_alt``,
-            - ``amount + 5``,
-            - ``amount - gps_alt + 2.5``,
-            - ``amount * gps_alt``,
-            - ``amount / gps_alt``,
-            - ``amount * gps_alt / 2.5``,
-            - ``amount + gps_alt * gps_precision``,
-        - precedence
-            - ``(amount + gps_alt) * gps_precision``,
-        - comparison
-            - ``amount == 2``,
-            - ``10 < amount``,
-            - ``10 < amount + gps_alt``,
-        - logical
-            - ``not amount == 2``,
-            - ``not(amount == 2)``,
-            - ``amount == 2 and 10 < amount``,
-            - ``amount == 2 or 10 < amount``,
-            - ``not not amount == 2 or 10 < amount``,
-            - ``not amount == 2 or 10 < amount``,
-            - ``not amount == 2) or 10 < amount``,
-            - ``not(amount == 2 or 10 < amount)``,
-            - ``amount ^ 3``,
-            - ``amount + gps_alt) ^ 2 + 100``,
-            - ``amount``,
-            - ``amount < gps_alt - 100``,
-        - membership
-            - ``rating in ["delectible"]``,
-            - ``risk_factor in ["low_risk"]``,
-            - ``amount in ["9.0", "2.0", "20.0"]``,
-            - ``risk_factor in ["low_risk"]) and (amount in ["9.0", "20.0"])``,
-        - dates
-            - ``date("09-04-2012") - submit_date > 21078000``,
-        - cases
-            - ``case food_type in ["morning_food"]: 1, default: 3``
 
         """
         if self.bnf:
@@ -164,7 +136,8 @@ class Parser(object):
         # case statment
         default = CaselessLiteral('default')
 
-        reserved_words = MatchFirst(map(Keyword, self.reserved_words))
+        reserved_words = MatchFirst(
+            [Keyword(word) for word in self.reserved_words])
 
         # atoms
         integer = Word(nums)
@@ -213,19 +186,81 @@ class Parser(object):
             (case_op, 1, opAssoc.RIGHT, EvalCaseOp),
         ]) | prop_expr
 
-        agg_expr = (
-            (aggregations + open_paren + case_expr + ZeroOrMore(
-                comma + case_expr)
-             ).setParseAction(self.store_aggregation) + close_paren
-        ) | case_expr
+        agg_expr = ((
+                    aggregations + open_paren +
+                    Optional(case_expr + ZeroOrMore(comma + case_expr)))
+                    .setParseAction(self.store_aggregation) + close_paren)\
+            | case_expr
 
         # top level bnf
         self.bnf = agg_expr
 
     def parse_formula(self, input_str):
+        """Parse formula and return evaluation function.
+
+        Parse *input_str* into an aggregation name and functions.
+        There will be multiple functions is the aggregation takes multiple
+        arguments, e.g. ratio which takes a numerator and denominator formula.
+
+        Examples:
+
+        - constants
+            - ``9 + 5``,
+        - aliases
+            - ``rating``,
+            - ``gps``,
+        - arithmetic
+            - ``amount + gps_alt``,
+            - ``amount - gps_alt``,
+            - ``amount + 5``,
+            - ``amount - gps_alt + 2.5``,
+            - ``amount * gps_alt``,
+            - ``amount / gps_alt``,
+            - ``amount * gps_alt / 2.5``,
+            - ``amount + gps_alt * gps_precision``,
+        - precedence
+            - ``(amount + gps_alt) * gps_precision``,
+        - comparison
+            - ``amount == 2``,
+            - ``10 < amount``,
+            - ``10 < amount + gps_alt``,
+        - logical
+            - ``not amount == 2``,
+            - ``not(amount == 2)``,
+            - ``amount == 2 and 10 < amount``,
+            - ``amount == 2 or 10 < amount``,
+            - ``not not amount == 2 or 10 < amount``,
+            - ``not amount == 2 or 10 < amount``,
+            - ``not amount == 2) or 10 < amount``,
+            - ``not(amount == 2 or 10 < amount)``,
+            - ``amount ^ 3``,
+            - ``amount + gps_alt) ^ 2 + 100``,
+            - ``amount``,
+            - ``amount < gps_alt - 100``,
+        - membership
+            - ``rating in ["delectible"]``,
+            - ``risk_factor in ["low_risk"]``,
+            - ``amount in ["9.0", "2.0", "20.0"]``,
+            - ``risk_factor in ["low_risk"]) and (amount in ["9.0", "20.0"])``,
+        - dates
+            - ``date("09-04-2012") - submit_date > 21078000``,
+        - cases
+            - ``case food_type in ["morning_food"]: 1, default: 3``
+
+        Args:
+
+        - dataset: The dataset to base context on, default is None.
+
+        Args:
+            input_str: The string to parse.
+
+        Returns:
+            A tuple with the name of the aggregation in the formula, if any
+            and a list of functions built from the input string.
         """
-        Parse formula and return evaluation function.
-        """
+
+        # reset dependent columns before parsing
+        self.context.dependent_columns = set()
 
         try:
             self.parsed_expr = self.bnf.parseString(input_str)[0]
@@ -237,14 +272,23 @@ class Parser(object):
 
         if self.aggregation:
             for column_function in self.column_functions:
-                functions.append(partial(column_function._eval))
+                functions.append(partial(column_function.eval))
         else:
-            functions.append(partial(self.parsed_expr._eval))
+            functions.append(partial(self.parsed_expr.eval))
         return self.aggregation, functions
 
     def validate_formula(self, formula, row):
-        """
-        Validate the *formula* on an example *row* of data.  Rebuild the BNF
+        """Validate the *formula* on an example *row* of data.
+
+        Rebuild the BNF then parse the *formula* given the sample *row*.
+
+        Args:
+
+        - formula: The formula to validate.
+        - row: A sample row to check the formula against.
+
+        Returns:
+            The aggregation for the formula.
         """
         # remove saved aggregation
         self.aggregation = None
@@ -263,10 +307,10 @@ class Parser(object):
         except KeyError, err:
             raise ParseError('Missing column reference: %s' % err)
 
+        return aggregation
+
     def __getstate__(self):
-        """
-        Get state for pickle.
-        """
+        """Get state for pickle."""
         return [
             self.aggregation,
             self.aggregation_names,
@@ -279,10 +323,8 @@ class Parser(object):
         ]
 
     def __setstate__(self, state):
-        """
-        Set internal variables from pickled state.
-        """
+        """Set internal variables from pickled state."""
         self.aggregation, self.aggregation_names, self.function_names,\
             self.operator_names, self.special_names, self.reserved_words,\
             self.special_names, self.context = state
-        self.BNF()
+        self._build_bnf()

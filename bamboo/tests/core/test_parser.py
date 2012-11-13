@@ -12,7 +12,7 @@ class TestParser(TestBase):
     def _check_func(self, parse_result):
         agg, functions = parse_result
         for func in functions:
-            self.assertEqual(func.func.func_name, '_eval')
+            self.assertEqual(func.func.func_name, 'eval')
         return functions[0]
 
     def test_parse_formula(self):
@@ -21,7 +21,7 @@ class TestParser(TestBase):
         self.assertEqual(func(self.row, self.parser.context), 1)
 
     def test_bnf(self):
-        result = self.parser.BNF()
+        result = self.parser._build_bnf()
         self.assertNotEqual(self.parser.bnf, None)
 
     def test_parse_formula_with_var(self):

@@ -11,8 +11,18 @@ Aggregation
 .. automodule:: bamboo.core.aggregations
     :members:
 
+Calculator
+----------
+.. autoclass:: bamboo.core.calculator.Calculator
+    :members:
+
+Frame
+-----
+.. automodule:: bamboo.core.frame
+    :members:
+
 Merge
-------------------
+-----
 .. automodule:: bamboo.core.merge
     :members:
 
@@ -25,6 +35,7 @@ Formula Parser
 --------------
 .. autoclass:: bamboo.core.parser.Parser
     :members:
+    :private-members:
 
 Summary Statistic Utilities
 ---------------------------

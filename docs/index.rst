@@ -6,12 +6,21 @@
 Welcome to bamboo's documentation!
 ==================================
 
-Bamboo is a data analysis web service.
-Bamboo is `open source <https://github.com/modilabs/bamboo>`_ software.
+Bamboo is an application that systematizes realtime data analysis. Bamboo
+provides an interface for merging, aggregating and adding algebraic
+calculations to dynamic datasets.  Clients can interact with Bamboo through a
+REST web interface and through Python.
 
 Bamboo supports a simple querying language to build calculations
 (e.g. student teacher ratio) and aggregations (e.g. average number of students
 per district) from datasets. These are updated as new data is received.
+
+Bamboo is `open source <https://github.com/modilabs/bamboo>`_ software released
+under the 3-clause BSD license, which is also known as the "Modified BSD
+License".
+
+.. image:: https://secure.travis-ci.org/modilabs/bamboo.png?branch=master
+  :target: http://travis-ci.org/modilabs/bamboo
 
 General configuration notes:
 
@@ -19,12 +28,42 @@ General configuration notes:
       unique entries.  This is controlled by a parameter in the
       ``core/summary`` module.
 
-Contents:
+Libraries that connect to Bamboo
+--------------------------------
+
+JavaScript
+^^^^^^^^^^
+
+`Bamboo.JS <http://modilabs.github.com/bamboo_js/>`_
+
+Python
+^^^^^^
+
+`PyBamboo <https://github.com/modilabs/pybamboo>`_
+
+Usage
+-----
 
 .. toctree::
    :maxdepth: 2
 
    basic_commands
+   advanced_commands
+
+Code Structure
+--------------
+
+.. toctree::
+   :maxdepth: 2
+
+   class_structure
+
+Code Documentation
+------------------
+
+.. toctree::
+   :maxdepth: 2
+
    config
    controllers
    core
@@ -37,4 +76,3 @@ Indices and tables
 * :ref:`genindex`
 * :ref:`modindex`
 * :ref:`search`
-
