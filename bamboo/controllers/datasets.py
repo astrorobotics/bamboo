@@ -1,11 +1,11 @@
 import cherrypy
 import urllib2
 
-from bamboo.controllers.abstract_controller import AbstractController,\
-    ArgumentError
+from bamboo.controllers.abstract_controller import AbstractController
 from bamboo.core.frame import NonUniqueJoinError
 from bamboo.core.merge import merge_dataset_ids, MergeError
 from bamboo.core.summary import ColumnTypeError
+from bamboo.lib.exceptions import ArgumentError
 from bamboo.lib.io import create_dataset_from_url, create_dataset_from_csv,\
     create_dataset_from_schema
 from bamboo.models.dataset import Dataset
@@ -90,9 +90,15 @@ class Datasets(AbstractController):
             An error message if *dataset_id* does not exist or the JSON for
             query or select is improperly formatted.  Otherwise the summary as
             a JSON string.
+
+        Raises:
+          ArgumentError: If no select is supplied or dataset is not in ready
+              state.
         """
         def _action(dataset, query=query, select=select, group=group,
                     limit=limit, order_by=order_by):
+            if not dataset.is_ready:
+                raise ArgumentError('dataset is not finished importing')
             if select is None:
                 raise ArgumentError('no select')
             if select == self.SELECT_ALL_FOR_SUMMARY:
@@ -103,13 +109,12 @@ class Datasets(AbstractController):
         return self._safe_get_and_call(dataset_id, _action, callback=callback,
                                        exceptions=(ColumnTypeError,))
 
-    def related(self, dataset_id, callback=False):
+    def aggregations(self, dataset_id, callback=False):
         """Return a dict of aggregated data for the given *dataset_id*.
 
         Args:
 
-        - dataset_id: The dataset ID of the dataset to return related data
-          for.
+        - dataset_id: The dataset ID of the dataset to return aggregations for.
         - callback: A JSONP callback function to wrap the result in.
 
         Returns:

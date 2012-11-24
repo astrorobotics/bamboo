@@ -2,7 +2,7 @@ import numpy as np
 
 from bamboo.lib.jsontools import series_to_jsondict
 from bamboo.lib.schema_builder import DIMENSION, OLAP_TYPE
-from bamboo.lib.mongo import dict_for_mongo
+from bamboo.lib.mongo import dict_from_mongo, dict_for_mongo
 
 
 MAX_CARDINALITY_FOR_COUNT = 10000
@@ -27,6 +27,7 @@ def summarize_series(dtype, data):
     """
     return {
         np.object_: data.value_counts(),
+        np.bool_: data.value_counts(),
         np.float64: data.describe(),
         np.int64: data.describe(),
     }.get(dtype.type, None)
@@ -89,7 +90,7 @@ def summarize(dataset, dframe, groups, group_str, no_cache):
         stats.update({group_str: group_stats})
         if not no_cache:
             dataset.update({dataset.STATS: dict_for_mongo(stats)})
-    stats_to_return = stats.get(group_str)
+    stats_to_return = dict_from_mongo(stats.get(group_str))
 
     return stats_to_return if group_str == dataset.ALL else {
         group_str: stats_to_return}

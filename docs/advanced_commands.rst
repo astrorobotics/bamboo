@@ -69,7 +69,10 @@ Updates which are subsequently made to either the left hand side or the right
 hand side dataset will be propagated to the joined dataset. Updates to the
 right hand side that make the join column non-unique will be disallowed.
 
-``curl -X POST -d "other_dataset_id=[9123]" http://bamboo.io/datasets/8123/join``
+For example supposing the 'food_type' column is in dataset with ID 8123 and
+9123, you can join the two datasets on that column by executing:
+
+``curl -X POST -d "dataset_id=8123&other_dataset_id=9123&on=food_type" http://bamboo.io/datasets/join``
 
 **returns:**
 
@@ -91,7 +94,7 @@ Below is an example SDF schema file:
 Supposing this file is saved locally as ``/home/modilabs/good_eats.schema.json``,
 you can create a dataset from this scema using:
 
-``curl -X POST -d "schema=/home/modilabs/good_eats.schema.json" http://bamboo.io/datasets``
+``curl -X POST -F schema=@/home/modilabs/good_eats.schema.json http://bamboo.io/datasets``
 
 **returns:**
 

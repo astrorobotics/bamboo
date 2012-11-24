@@ -43,7 +43,7 @@ class TestDatasetsUpdate(TestAbstractDatasets):
         self.formula1 = 'sum(amount)'
         self.calculations.create(self.dataset2_id, self.formula1, self.name1)
         result = json.loads(
-            self.controller.related(self.dataset2_id))
+            self.controller.aggregations(self.dataset2_id))
         self.linked_dataset1_id = result['']
 
         # create merged datasets
@@ -123,7 +123,7 @@ class TestDatasetsUpdate(TestAbstractDatasets):
     def test_datasets_update_aggregated_dataset(self):
         self._put_row_updates(
             dataset_id=self.linked_dataset1_id,
-            file_path='tests/fixtures/updates/update_agg/update.json')
+            file_name='updates/update_agg/update.json')
         self._verify_dataset(
             self.linked_dataset1_id,
             'tests/fixtures/updates/update_agg/linked_dataset1.p')

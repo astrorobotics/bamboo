@@ -1,9 +1,7 @@
 import json
 import pickle
 
-from bamboo.controllers.calculations import Calculations
 from bamboo.controllers.datasets import Datasets
-from bamboo.core.frame import PARENT_DATASET_ID
 from bamboo.models.dataset import Dataset
 from bamboo.lib.datetools import recognize_dates
 from bamboo.tests.controllers.test_abstract_datasets import\
@@ -42,7 +40,8 @@ class TestDatasetsUpdateWithJoin(TestAbstractDatasets):
         self.joined_dataset_id = results[Dataset.ID]
 
     def _verify_dataset(self, dataset_id, fixture_path):
-        dframe = Dataset.find_one(dataset_id).dframe()
+        dataset = Dataset.find_one(dataset_id)
+        dframe = dataset.dframe()
         expected_dframe = recognize_dates(
             pickle.load(open(fixture_path, 'rb')))
         self._check_dframes_are_equal(dframe, expected_dframe)
@@ -61,8 +60,7 @@ class TestDatasetsUpdateWithJoin(TestAbstractDatasets):
     def test_datasets_update_left(self):
         self._put_row_updates(
             self.left_dataset_id,
-            file_path='tests/fixtures/updates_with_join/update_left/update.jso'
-            'n'
+            file_name='updates_with_join/update_left/update.json'
         )
         self._verify_dataset(
             self.left_dataset_id,
@@ -74,7 +72,7 @@ class TestDatasetsUpdateWithJoin(TestAbstractDatasets):
     def test_datasets_update_left_no_join_col(self):
         self._put_row_updates(
             self.left_dataset_id,
-            file_path='tests/fixtures/updates_with_join/update_left_no_join_co'
+            file_name='updates_with_join/update_left_no_join_co'
             'l/update.json')
         self._verify_dataset(
             self.left_dataset_id,
@@ -88,12 +86,11 @@ class TestDatasetsUpdateWithJoin(TestAbstractDatasets):
     def test_datasets_update_right(self):
         self._put_row_updates(
             self.left_dataset_id,
-            file_path='tests/fixtures/updates_with_join/update_left/update_bak'
-            'ed_goods.json'
+            file_name='updates_with_join/update_left/update_baked_goods.json'
         )
         self._put_row_updates(
             self.right_dataset_id,
-            file_path='tests/fixtures/updates_with_join/update_right/update.js'
+            file_name='updates_with_join/update_right/update.js'
             'on'
         )
         self._verify_dataset(
@@ -109,8 +106,7 @@ class TestDatasetsUpdateWithJoin(TestAbstractDatasets):
     def test_datasets_update_right_non_unique_join(self):
         self._put_row_updates(
             self.right_dataset_id,
-            file_path='tests/fixtures/updates_with_join/update_right/update_no'
-            'n_unique.json',
+            file_name='updates_with_join/update_right/update_non_unique.json',
             validate=False
         )
         self._verify_dataset(

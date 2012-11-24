@@ -3,7 +3,6 @@ import pickle
 
 from bamboo.controllers.calculations import Calculations
 from bamboo.controllers.datasets import Datasets
-from bamboo.core.frame import PARENT_DATASET_ID
 from bamboo.models.dataset import Dataset
 from bamboo.lib.datetools import recognize_dates
 from bamboo.tests.controllers.test_abstract_datasets import\
@@ -62,7 +61,7 @@ class TestDatasetsUpdateWithAggs(TestAbstractDatasets):
                 self.dataset2_id, aggregation, name, group='food_type')
 
         result = json.loads(
-            self.controller.related(self.dataset2_id))
+            self.controller.aggregations(self.dataset2_id))
 
         self.linked_dataset1_id = result['']
 

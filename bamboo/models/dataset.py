@@ -12,6 +12,7 @@ from bamboo.core.calculator import Calculator
 from bamboo.core.frame import BambooFrame, BAMBOO_RESERVED_KEY_PREFIX,\
     DATASET_ID, DATASET_OBSERVATION_ID, PARENT_DATASET_ID
 from bamboo.core.summary import summarize
+from bamboo.lib.exceptions import ArgumentError
 from bamboo.lib.mongo import reserve_encoded
 from bamboo.lib.schema_builder import DIMENSION, OLAP_TYPE,\
     schema_from_data_and_dtypes
@@ -60,6 +61,14 @@ class Dataset(AbstractModel):
     @property
     def dataset_id(self):
         return self.record[DATASET_ID]
+
+    @property
+    def num_columns(self):
+        return self.record.get(self.NUM_COLUMNS, 0)
+
+    @property
+    def num_rows(self):
+        return self.record.get(self.NUM_ROWS, 0)
 
     @property
     def schema(self):
@@ -113,7 +122,7 @@ class Dataset(AbstractModel):
             return self.schema[col][self.CARDINALITY]
 
     def dframe(self, query=None, select=None, keep_parent_ids=False,
-               limit=0, order_by=None):
+               limit=0, order_by=None, padded=False):
         """Fetch the dframe for this dataset.
 
         Args:
@@ -153,6 +162,14 @@ class Dataset(AbstractModel):
         dframe = BambooFrame(concat(dframes) if len(dframes) else [])
         dframe.decode_mongo_reserved_keys()
         dframe.remove_bamboo_reserved_keys(keep_parent_ids)
+
+        if padded:
+            if len(dframe.columns):
+                on = dframe.columns[0]
+                place_holder = self.place_holder_dframe(dframe).set_index(on)
+                dframe = BambooFrame(dframe.join(place_holder, on=on))
+            else:
+                dframe = self.place_holder_dframe()
         return dframe
 
     def add_joined_dataset(self, new_data):
@@ -236,6 +253,9 @@ class Dataset(AbstractModel):
         # if select append groups to select
         if select:
             select = json.loads(select)
+            if not isinstance(select, dict):
+                raise ArgumentError('select argument must be a JSON dictionary'
+                                    ', found: %s.' % select)
             select.update(dict(zip(groups, [1] * len(groups))))
             select = json.dumps(select)
 
@@ -259,14 +279,39 @@ class Dataset(AbstractModel):
         record[self.UPDATED_AT] = strftime("%Y-%m-%d %H:%M:%S", gmtime())
         super(self.__class__, self).update(record)
 
-    def build_schema(self, dframe):
-        """Build schema for a dataset."""
-        schema = schema_from_data_and_dtypes(self, dframe)
-        self.update({self.SCHEMA: schema})
+    def build_schema(self, dframe, overwrite=False, set_num_columns=True):
+        """Build schema for a dataset.
 
-    def set_schema(self, schema):
+        If no schema exists, build a schema from the passed *dframe* and store
+        that schema for this dataset.  Otherwise, if a schema does exist, build
+        a schema for the passed *dframe* and merge this schema with the current
+        schema.  Keys in the new schema replace keys in the current schema but
+        keys in the current schema not in the new schema are retained.
+
+        If *set_num_columns* is True the number of columns will be set to the
+        number of keys (columns) in the new schema.
+
+        Args:
+
+        - dframe: The DataFrame whose schema to merge with the current schema.
+        - set_num_columns: If True also set the number of columns.
+
+        """
+        current_schema = self.schema
+        new_schema = schema_from_data_and_dtypes(self, dframe)
+        if current_schema and not overwrite:
+            # merge new schema with existing schema
+            current_schema.update(new_schema)
+            new_schema = current_schema
+        self.set_schema(new_schema,
+                        set_num_columns=(set_num_columns or overwrite))
+
+    def set_schema(self, schema, set_num_columns=True):
         """Set the schema from an existing one."""
-        self.update({self.SCHEMA: schema})
+        update_dict = {self.SCHEMA: schema}
+        if set_num_columns:
+            update_dict.update({self.NUM_COLUMNS: len(schema.keys())})
+        self.update(update_dict)
 
     def info(self):
         """Return meta-data for this dataset."""
@@ -279,8 +324,8 @@ class Dataset(AbstractModel):
             self.ATTRIBUTION: '',
             self.CREATED_AT: self.record.get(self.CREATED_AT),
             self.UPDATED_AT: self.record.get(self.UPDATED_AT),
-            self.NUM_COLUMNS: self.record.get(self.NUM_COLUMNS),
-            self.NUM_ROWS: self.record.get(self.NUM_ROWS),
+            self.NUM_COLUMNS: self.num_columns,
+            self.NUM_ROWS: self.num_rows,
         }
 
     def build_labels_to_slugs(self):
@@ -331,7 +376,8 @@ class Dataset(AbstractModel):
         Observation().save(dframe, self)
         return self.dframe()
 
-    def replace_observations(self, dframe):
+    def replace_observations(self, dframe, overwrite=False,
+                             set_num_columns=True):
         """Remove all rows for this dataset and save the rows in *dframe*.
 
         Args:
@@ -341,7 +387,8 @@ class Dataset(AbstractModel):
         Returns:
             BambooFrame equivalent to the passed in *dframe*.
         """
-        self.build_schema(dframe)
+        self.build_schema(dframe, overwrite=overwrite,
+                          set_num_columns=set_num_columns)
         Observation.delete_all(self)
         return self.save_observations(dframe)
 
@@ -356,13 +403,33 @@ class Dataset(AbstractModel):
         dframe = self.dframe(keep_parent_ids=True)
         self.replace_observations(dframe.drop(columns, axis=1))
 
+    def place_holder_dframe(self, dframe=None):
+        columns = self.schema.keys()
+        if dframe is not None:
+            columns = [col for col in columns if col not in dframe.columns[1:]]
+        return BambooFrame([[''] * len(columns)], columns=columns)
+
     def join(self, other, on):
-        merged_dframe = self.dframe().join_dataset(other, on)
+        merged_dframe = self.dframe()
+
+        if not len(merged_dframe.columns):
+            # Empty dataset, simulate columns
+            merged_dframe = self.place_holder_dframe()
+
+        merged_dframe = merged_dframe.join_dataset(other, on)
         merged_dataset = self.__class__()
         merged_dataset.save()
-        merged_dataset.save_observations(merged_dframe)
+        if self.num_rows and other.num_rows:
+            merged_dataset.save_observations(merged_dframe)
+        else:
+            merged_dataset.build_schema(merged_dframe, set_num_columns=True)
+            merged_dataset.ready()
+
         self.add_joined_dataset(
             ('right', other.dataset_id, on, merged_dataset.dataset_id))
         other.add_joined_dataset(
             ('left', self.dataset_id, on, merged_dataset.dataset_id))
         return merged_dataset
+
+    def reload(self):
+        self.record = Dataset.find_one(self.dataset_id).record

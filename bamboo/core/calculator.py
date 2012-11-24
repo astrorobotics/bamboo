@@ -147,6 +147,11 @@ class Calculator(object):
         """
         self.ensure_dframe()
 
+        # dataset must not be pending
+        if not self.dataset.is_ready:
+            self.dataset.reload()
+            raise self.calculate_updates.retry(countdown=1)
+
         calculations = self.dataset.calculations()
         labels_to_slugs = self.dataset.build_labels_to_slugs()
         new_dframe_raw = self._dframe_from_update(new_data, labels_to_slugs)
@@ -156,7 +161,7 @@ class Calculator(object):
         # join as a result
         if any([direction == 'left' for direction, _, on, __ in
                 self.dataset.joined_datasets]):
-            if on in new_dframe_raw.columns:
+            if on in new_dframe_raw.columns and on in self.dframe.columns:
                 merged_join_column = concat(
                     [new_dframe_raw[on], self.dframe[on]])
                 if len(merged_join_column) != merged_join_column.nunique():
@@ -196,7 +201,8 @@ class Calculator(object):
         updated_dframe = concat([existing_dframe, new_dframe])
 
         # update (overwrite) the dataset with the new merged version
-        self.dframe = self.dataset.replace_observations(updated_dframe)
+        self.dframe = self.dataset.replace_observations(
+            updated_dframe, set_num_columns=False)
         self.dataset.clear_summary_stats()
 
         self._update_aggregate_datasets(aggregate_calculations, new_dframe)
@@ -222,9 +228,15 @@ class Calculator(object):
         for direction, other_dataset, on, joined_dataset in\
                 self.dataset.joined_datasets:
             if direction == 'left':
-                merged_dframe = other_dataset.dframe().join_dataset(
-                    self.dataset, on)
-                joined_dataset.replace_observations(merged_dframe)
+                if on in new_dframe_raw.columns:
+                    # only proceed if on in new dframe
+                    other_dframe = other_dataset.dframe(padded=True)
+                    if len(set(new_dframe_raw[on]).intersection(
+                            set(other_dframe[on]))):
+                        # only proceed if new on value is in on column in lhs
+                        merged_dframe = other_dframe.join_dataset(
+                            self.dataset, on)
+                        joined_dataset.replace_observations(merged_dframe)
             else:
                 merged_dframe = new_dframe_raw
                 if on in merged_dframe:
@@ -257,16 +269,21 @@ class Calculator(object):
             new_data = [new_data]
 
         filtered_data = []
+        columns = self.dframe.columns
+        if not len(columns):
+            columns = self.dataset.schema.keys()
         for row in new_data:
             filtered_row = dict()
             for col, val in row.iteritems():
-                if labels_to_slugs.get(col, None) in self.dframe.columns:
-                    filtered_row[labels_to_slugs[col]] = val
                 # special case for reserved keys (e.g. _id)
-                if col in MONGO_RESERVED_KEYS and\
-                    col in self.dframe.columns and\
-                        col not in filtered_row.keys():
-                    filtered_row[col] = val
+                if col in MONGO_RESERVED_KEYS:
+                    if (not len(columns) or col in columns) and\
+                            col not in filtered_row.keys():
+                        filtered_row[col] = val
+                else:
+                    slug = labels_to_slugs.get(col)
+                    if slug and (not len(columns) or slug in columns):
+                        filtered_row[slug] = val
             filtered_data.append(filtered_row)
         return BambooFrame(filtered_data)
 

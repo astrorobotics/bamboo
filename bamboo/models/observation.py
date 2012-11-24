@@ -53,7 +53,8 @@ class Observation(AbstractModel):
             query = (query and json.loads(
                 query, object_hook=json_util.object_hook)) or {}
 
-            query = parse_timestamp_query(query, dataset.schema)
+            if dataset.schema:
+                query = parse_timestamp_query(query, dataset.schema)
         except ValueError, err:
             raise JSONError('cannot decode query: %s' % err.__str__())
 
@@ -84,11 +85,10 @@ class Observation(AbstractModel):
 
         """
         # build schema for the dataset after having read it from file.
-        if not dataset.SCHEMA in dataset.record:
+        if not dataset.schema:
             dataset.build_schema(dframe)
 
         # save the data, if there is any
-        num_columns = len(dataset.record[dataset.SCHEMA].keys())
         num_rows = 0
         if dframe is not None:
             labels_to_slugs = dataset.build_labels_to_slugs()
@@ -108,7 +108,6 @@ class Observation(AbstractModel):
 
         # add metadata to dataset, discount ID column
         dataset.update({
-            dataset.NUM_COLUMNS: num_columns,
             dataset.NUM_ROWS: num_rows,
             dataset.STATE: self.STATE_READY,
         })
