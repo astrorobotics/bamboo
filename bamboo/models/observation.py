@@ -65,6 +65,7 @@ class Observation(AbstractModel):
                 raise JSONError('cannot decode select: %s' % err.__str__())
 
         query[DATASET_OBSERVATION_ID] = dataset.dataset_observation_id
+
         return super(cls, cls).find(
             query, select, as_dict=True, limit=limit, order_by=order_by,
             as_cursor=as_cursor)
@@ -90,14 +91,15 @@ class Observation(AbstractModel):
 
         # save the data, if there is any
         num_rows = 0
+
         if dframe is not None:
             labels_to_slugs = dataset.build_labels_to_slugs()
 
             # if column name is not in map assume it is already slugified
             # (i.e. NOT a label)
-            dframe = dframe.rename(columns=dict([
-                (column, labels_to_slugs.get(column, column)) for column in
-                dframe.columns.tolist()]))
+            dframe = dframe.rename(columns={
+                column: labels_to_slugs.get(column, column) for column in
+                dframe.columns.tolist()})
 
             id_column = Series([dataset.dataset_observation_id] * len(dframe))
             id_column.name = DATASET_OBSERVATION_ID

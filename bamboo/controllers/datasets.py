@@ -1,4 +1,3 @@
-import cherrypy
 import urllib2
 
 from bamboo.controllers.abstract_controller import AbstractController
@@ -8,6 +7,7 @@ from bamboo.core.summary import ColumnTypeError
 from bamboo.lib.exceptions import ArgumentError
 from bamboo.lib.io import create_dataset_from_url, create_dataset_from_csv,\
     create_dataset_from_schema
+from bamboo.lib.utils import parse_int
 from bamboo.models.dataset import Dataset
 
 
@@ -47,6 +47,7 @@ class Datasets(AbstractController):
         def _action(dataset):
             dataset.delete()
             return {self.SUCCESS: 'deleted dataset: %s' % dataset_id}
+
         return self._safe_get_and_call(dataset_id, _action)
 
     def info(self, dataset_id, callback=False):
@@ -63,6 +64,7 @@ class Datasets(AbstractController):
         """
         def _action(dataset):
             return dataset.info()
+
         return self._safe_get_and_call(dataset_id, _action, callback=callback)
 
     def summary(self, dataset_id, query=None, select=None,
@@ -95,6 +97,8 @@ class Datasets(AbstractController):
           ArgumentError: If no select is supplied or dataset is not in ready
               state.
         """
+        limit = parse_int(limit, 0)
+
         def _action(dataset, query=query, select=select, group=group,
                     limit=limit, order_by=order_by):
             if not dataset.is_ready:
@@ -106,6 +110,7 @@ class Datasets(AbstractController):
             return dataset.summarize(dataset, query, select,
                                      group, limit=limit,
                                      order_by=order_by)
+
         return self._safe_get_and_call(dataset_id, _action, callback=callback,
                                        exceptions=(ColumnTypeError,))
 
@@ -123,6 +128,7 @@ class Datasets(AbstractController):
         """
         def _action(dataset):
             return dataset.aggregated_datasets_dict
+
         return self._safe_get_and_call(dataset_id, _action, callback=callback)
 
     def show(self, dataset_id, query=None, select=None,
@@ -148,6 +154,8 @@ class Datasets(AbstractController):
             query or select is improperly formatted. Otherwise a JSON string of
             the rows matching the parameters.
         """
+        limit = parse_int(limit, 0)
+
         def _action(dataset, query=query, select=select,
                     limit=limit, order_by=order_by):
             return dataset.dframe(
@@ -240,24 +248,22 @@ class Datasets(AbstractController):
 
         return self.dump_or_error(result, error, success_status_code=201)
 
-    def update(self, dataset_id):
-        """Update the *dataset_id* with the body as JSON.
+    def update(self, dataset_id, update):
+        """Update the *dataset_id* with the new rows as JSON.
 
         Args:
 
         - dataset_id: The ID of the dataset to update.
+        - update: The JSON to update the dataset with.
 
         Returns:
             A JSON dict with the ID of the dataset updated, or with an error
             message.
         """
-        result = None
-        error = 'dataset for this id does not exist'
-        dataset = Dataset.find_one(dataset_id)
-
         def _action(dataset):
-            dataset.add_observations(cherrypy.request.body.read())
+            dataset.add_observations(update)
             return {Dataset.ID: dataset_id}
+
         return self._safe_get_and_call(
             dataset_id, _action, exceptions=(NonUniqueJoinError,))
 
@@ -279,6 +285,7 @@ class Datasets(AbstractController):
             dataset.drop_columns(columns)
             return {self.SUCCESS: 'in dataset %s dropped columns: %s' %
                     (dataset.dataset_id, columns)}
+
         return self._safe_get_and_call(dataset_id, _action)
 
     def join(self, dataset_id, other_dataset_id, on=None):
@@ -306,6 +313,7 @@ class Datasets(AbstractController):
                         other_dataset_id, dataset.dataset_id, on),
                     Dataset.ID: merged_dataset.dataset_id,
                 }
+
         return self._safe_get_and_call(
             dataset_id, _action, other_dataset_id=other_dataset_id, on=on,
             exceptions=(KeyError, NonUniqueJoinError))

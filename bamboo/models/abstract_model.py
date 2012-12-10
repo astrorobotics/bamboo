@@ -57,6 +57,7 @@ class AbstractModel(object):
         if not cls.__collection__:
             cls.__collection__ = AbstractModel.set_collection(
                 cls.__collectionname__)
+
         return cls.__collection__
 
     @classmethod
@@ -120,10 +121,10 @@ class AbstractModel(object):
     @property
     def clean_record(self):
         """Remove reserved keys from records."""
-        _dict = dict([
-            (key, value) for (key, value) in self.record.items() if not key in
+        _dict = {
+            key: value for (key, value) in self.record.items() if not key in
             BAMBOO_RESERVED_KEYS
-        ])
+        }
         return remove_mongo_reserved_keys(_dict)
 
     def delete(self, query):
@@ -179,6 +180,7 @@ class AbstractModel(object):
         """
         def command(records):
             self.collection.insert(records, safe=True)
+
         self._batch_command(command, dframe)
 
     def _batch_command(self, command, dframe):

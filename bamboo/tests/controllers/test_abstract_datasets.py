@@ -1,6 +1,3 @@
-import os
-
-import cherrypy
 import simplejson as json
 
 from bamboo.controllers.calculations import Calculations
@@ -22,22 +19,28 @@ class TestAbstractDatasets(TestBase):
         self.controller = Datasets()
         self._file_name = 'good_eats.csv'
         self._update_file_name = 'good_eats_update.json'
-        self._update_file_path = 'tests/fixtures/%s' % self._update_file_name
-        self._update_check_file_name = 'good_eats_update_values.json'
-        self._update_check_file_path = 'tests/fixtures/%s' %\
-            self._update_check_file_name
+        self._update_check_file_path = '%sgood_eats_update_values.json' % (
+            self.FIXTURE_PATH)
+        self.default_formulae = [
+            'amount',
+            'amount + 1',
+            'amount - 5',
+        ]
 
     def _put_row_updates(self, dataset_id=None, file_name=None, validate=True):
         if not dataset_id:
             dataset_id = self.dataset_id
-        # mock the cherrypy server by setting the POST request body
+
         if not file_name:
             file_name = self._update_file_name
-        cherrypy.request.body = open('tests/fixtures/%s' % file_name, 'r')
-        result = json.loads(self.controller.update(dataset_id=dataset_id))
+
+        update = open('%s%s' % (self.FIXTURE_PATH, file_name), 'r').read()
+        result = json.loads(self.controller.update(dataset_id=dataset_id,
+                                                   update=update))
         if validate:
             self.assertTrue(isinstance(result, dict))
             self.assertTrue(Dataset.ID in result)
+
         # set up the (default) values to test against
         with open(self._update_check_file_path, 'r') as f:
             self._update_values = json.loads(f.read())
@@ -45,9 +48,11 @@ class TestAbstractDatasets(TestBase):
     def _post_file(self, file_name=None):
         if file_name is None:
             file_name = self._file_name
+
         self.dataset_id = create_dataset_from_url(
-            'file://localhost%s/tests/fixtures/%s' % (os.getcwd(), file_name),
+            '%s%s' % (self._local_fixture_prefix(), file_name),
             allow_local_file=True).dataset_id
+
         self.schema = json.loads(
             self.controller.info(self.dataset_id))[Dataset.SCHEMA]
 
@@ -58,6 +63,7 @@ class TestAbstractDatasets(TestBase):
     def _check_dframe_is_subset(self, dframe1, dframe2):
         dframe2_rows = [self._reduce_precision(row) for row in
                         BambooFrame(dframe2).to_jsondict()]
+
         for row in dframe1.iterrows():
             dframe1_row = self._reduce_precision(series_to_jsondict(row[1]))
             self.assertTrue(dframe1_row in dframe2_rows,
@@ -68,16 +74,29 @@ class TestAbstractDatasets(TestBase):
         for key, value in row.iteritems():
             if isinstance(value, float):
                 row[key] = round(value, 10)
+
         return row
+
+    def _post_calculations(self, formulae=[], group=None):
+        # must call after _post_file
+        controller = Calculations()
+
+        for idx, formula in enumerate(formulae):
+            name = 'calc_%d' % idx if not self.schema or\
+                formula in self.schema.keys() else formula
+            controller.create(self.dataset_id, formula=formula, name=name,
+                              group=group)
 
     def _test_summary_built(self, result):
         # check that summary is created
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(Dataset.ID in result)
         self.dataset_id = result[Dataset.ID]
+
         results = self.controller.summary(
             self.dataset_id,
             select=self.controller.SELECT_ALL_FOR_SUMMARY)
+
         return self._test_summary_results(results)
 
     def _test_summary_results(self, results):
@@ -85,10 +104,13 @@ class TestAbstractDatasets(TestBase):
         self.assertTrue(isinstance(results, dict))
         return results
 
-    def _post_calculations(self, formulae=[], group=None):
-        # must call after _post_file
-        controller = Calculations()
-        for idx, formula in enumerate(formulae):
-            name = 'calc_%d' % idx if not self.schema or\
-                formula in self.schema.keys() else formula
-            controller.create(self.dataset_id, formula, name, group)
+    def _test_aggregations(self, groups=['']):
+        results = json.loads(self.controller.aggregations(self.dataset_id))
+        self.assertTrue(isinstance(results, dict))
+        self.assertEqual(len(results.keys()), len(groups))
+        self.assertEqual(results.keys(), groups)
+        linked_dataset_id = results[groups[0]]
+        self.assertTrue(isinstance(linked_dataset_id, basestring))
+
+        # inspect linked dataset
+        return json.loads(self.controller.show(linked_dataset_id))

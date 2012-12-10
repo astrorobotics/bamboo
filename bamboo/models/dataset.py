@@ -84,8 +84,8 @@ class Dataset(AbstractModel):
 
     @property
     def aggregated_datasets(self):
-        return dict([(group, self.find_one(_id)) for (group, _id) in
-                     self.aggregated_datasets_dict.items()])
+        return {group: self.find_one(_id) for (group, _id) in
+                self.aggregated_datasets_dict.items()}
 
     @property
     def joined_dataset_ids(self):
@@ -170,6 +170,7 @@ class Dataset(AbstractModel):
                 dframe = BambooFrame(dframe.join(place_holder, on=on))
             else:
                 dframe = self.place_holder_dframe()
+
         return dframe
 
     def add_joined_dataset(self, new_data):
@@ -188,6 +189,7 @@ class Dataset(AbstractModel):
     def clear_summary_stats(self, field=ALL):
         """Remove summary stats for *field*."""
         stats = self.stats
+
         if stats:
             stats.pop(field, None)
             self.update({self.STATS: stats})
@@ -216,6 +218,7 @@ class Dataset(AbstractModel):
             self.CREATED_AT: strftime("%Y-%m-%d %H:%M:%S", gmtime()),
             self.STATE: self.STATE_PENDING,
         }
+
         return super(self.__class__, self).save(record)
 
     def delete(self):
@@ -330,9 +333,9 @@ class Dataset(AbstractModel):
 
     def build_labels_to_slugs(self):
         """Build dict from column labels to slugs."""
-        return dict([
-            (column_attrs[self.LABEL], reserve_encoded(column_name)) for
-            (column_name, column_attrs) in self.schema.items()])
+        return {
+            column_attrs[self.LABEL]: reserve_encoded(column_name) for
+            (column_name, column_attrs) in self.schema.items()}
 
     def observations(self, query=None, select=None, limit=0, order_by=None,
                      as_cursor=False):
@@ -407,6 +410,7 @@ class Dataset(AbstractModel):
         columns = self.schema.keys()
         if dframe is not None:
             columns = [col for col in columns if col not in dframe.columns[1:]]
+
         return BambooFrame([[''] * len(columns)], columns=columns)
 
     def join(self, other, on):
@@ -429,7 +433,9 @@ class Dataset(AbstractModel):
             ('right', other.dataset_id, on, merged_dataset.dataset_id))
         other.add_joined_dataset(
             ('left', self.dataset_id, on, merged_dataset.dataset_id))
+
         return merged_dataset
 
     def reload(self):
         self.record = Dataset.find_one(self.dataset_id).record
+        return self
