@@ -6,7 +6,7 @@ from bamboo.controllers.datasets import Datasets
 from bamboo.models.dataset import Dataset
 from bamboo.tests.controllers.test_abstract_datasets import\
     TestAbstractDatasets
-from bamboo.tests.decorators import requires_async, requires_internet
+from bamboo.tests.decorators import requires_async
 
 
 class TestDatasetsPostUpdate(TestAbstractDatasets):
@@ -16,7 +16,7 @@ class TestDatasetsPostUpdate(TestAbstractDatasets):
         self._file_name_with_slashes = 'good_eats_with_slashes.csv'
 
     def test_dataset_id_update_bad_dataset_id(self):
-        result = json.loads(self.controller.update(dataset_id=111, 
+        result = json.loads(self.controller.update(dataset_id=111,
                                                    update=None))
         assert(Datasets.ERROR in result)
 
@@ -24,7 +24,7 @@ class TestDatasetsPostUpdate(TestAbstractDatasets):
     def test_dataset_update_pending(self):
         self._post_file(self._file_name_with_slashes)
         dataset = Dataset.find_one(self.dataset_id)
-        self.assertEqual(dataset.status, Dataset.STATE_PENDING)
+        self.assertEqual(dataset.state, Dataset.STATE_PENDING)
         self._put_row_updates()
 
         while True:

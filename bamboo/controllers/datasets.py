@@ -122,7 +122,7 @@ class Datasets(AbstractController):
         return self._safe_get_and_call(dataset_id, _action, callback=callback)
 
     def show(self, dataset_id, query=None, select=None,
-             limit=0, order_by=None, callback=False):
+             limit=0, order_by=None, format=None, callback=False):
         """ Return rows for `dataset_id`, matching the passed parameters.
 
         Retrieve the dataset by ID then limit that data using the optional
@@ -135,6 +135,7 @@ class Datasets(AbstractController):
         :param query: If passed restrict results to rows matching this query.
         :param limit: If passed limit the rows to this number.
         :param order_by: If passed order the result using this column.
+        :param format: Format of output data, 'json' or 'csv'
         :param callback: A JSONP callback function to wrap the result in.
 
         :returns: An error message if `dataset_id` does not exist or the JSON
@@ -144,10 +145,12 @@ class Datasets(AbstractController):
         limit = parse_int(limit, 0)
 
         def _action(dataset, query=query, select=select,
-                    limit=limit, order_by=order_by):
-            return dataset.dframe(
+                    limit=limit, order_by=order_by, format=format):
+            dframe = dataset.dframe(
                 query=query, select=select,
-                limit=limit, order_by=order_by).to_jsondict()
+                limit=limit, order_by=order_by)
+            return dframe.__getattribute__(
+                'to_csv_as_string' if format == self.CSV else 'to_jsondict')()
 
         return self._safe_get_and_call(dataset_id, _action, callback=callback)
 
@@ -172,7 +175,7 @@ class Datasets(AbstractController):
 
         return self.dump_or_error(result, error)
 
-    def create(self, url=None, csv_file=None, schema=None):
+    def create(self, url=None, csv_file=None, schema=None, perish=0):
         """Create a dataset by URL, CSV or schema file.
 
         If `url` is provided, create a dataset by downloading a CSV from that
@@ -184,8 +187,9 @@ class Datasets(AbstractController):
 
         .. note::
 
-            The follow words are reserved and will lead to unexpected behavior
-            if used as column names:
+            The follow words are reserved and will be slugified by adding
+            underscores (or multiple underscores to ensure uniqueness) if used
+            as column names:
 
                 - all
                 - and
@@ -224,6 +228,10 @@ class Datasets(AbstractController):
                 dataset = create_dataset_from_schema(schema)
             if dataset:
                 result = {Dataset.ID: dataset.dataset_id}
+
+            perish = parse_int(perish, None)
+            if perish:
+                dataset.delete(countdown=perish)
         except urllib2.URLError:
             error = 'could not load: %s' % url
         except IOError:

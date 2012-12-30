@@ -2,21 +2,21 @@ from base64 import b64encode
 from datetime import datetime
 import pickle
 from time import mktime, sleep
+from urllib2 import URLError
 
+from mock import patch
 import simplejson as json
 
 from bamboo.controllers.abstract_controller import AbstractController
 from bamboo.controllers.datasets import Datasets
 from bamboo.core.summary import SUMMARY
-from bamboo.lib.datetools import DATETIME
 from bamboo.lib.mongo import ILLEGAL_VALUES, MONGO_RESERVED_KEYS
-from bamboo.lib.schema_builder import SIMPLETYPE
+from bamboo.lib.schema_builder import CARDINALITY, DATETIME, SIMPLETYPE
 from bamboo.lib.utils import GROUP_DELIMITER
 from bamboo.models.dataset import Dataset
 from bamboo.tests.controllers.test_abstract_datasets import\
     TestAbstractDatasets
-from bamboo.tests.decorators import requires_async, requires_internet
-from bamboo.tests.mock import MockUploadedFile
+from bamboo.tests.decorators import requires_async
 
 
 class TestDatasets(TestAbstractDatasets):
@@ -26,10 +26,6 @@ class TestDatasets(TestAbstractDatasets):
         self._file_path = 'tests/fixtures/%s' % self._file_name
         self._file_uri = 'file://%s' % self._file_path
         self.url = 'http://formhub.org/mberg/forms/good_eats/data.csv'
-        self.cardinalities = pickle.load(
-            open('tests/fixtures/good_eats_cardinalities.p', 'rb'))
-        self.simpletypes = pickle.load(
-            open('tests/fixtures/good_eats_simpletypes.p', 'rb'))
 
     def _test_summary_no_group(self, results, group=None):
         group = [group] if group else []
@@ -37,10 +33,10 @@ class TestDatasets(TestAbstractDatasets):
         # minus the column that we are grouping on
         self.assertEqual(len(result_keys), self.NUM_COLS - len(group))
         columns = [col for col in
-                   self.test_data[self._file_name].columns.tolist()
+                   self.get_data(self._file_name).columns.tolist()
                    if not col in MONGO_RESERVED_KEYS + group]
         dataset = Dataset.find_one(self.dataset_id)
-        labels_to_slugs = dataset.build_labels_to_slugs()
+        labels_to_slugs = dataset.schema.labels_to_slugs
         for col in columns:
             slug = labels_to_slugs[col]
             self.assertTrue(slug in result_keys,
@@ -60,11 +56,13 @@ class TestDatasets(TestAbstractDatasets):
         if query != '{}':
             self.assertEqual(len(results), num_results)
 
+    def _upload_mocked_file(self, **kwargs):
+        mock_uploaded_file = self._file_mock(self._file_path)
+        return json.loads(self.controller.create(
+            csv_file=mock_uploaded_file, **kwargs))
+
     def test_create_from_file(self):
-        _file = open(self._file_path, 'r')
-        mock_uploaded_file = MockUploadedFile(_file)
-        result = json.loads(
-            self.controller.create(csv_file=mock_uploaded_file))
+        result = self._upload_mocked_file()
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(Dataset.ID in result)
 
@@ -75,63 +73,83 @@ class TestDatasets(TestAbstractDatasets):
         """First data row has one cell blank, which is usually interpreted
         as nan, a float value."""
         _file_name = 'good_eats_nan_float.csv'
-        _file_path = self._file_path.replace(self._file_name, _file_name)
-        _file = open(_file_path, 'r')
-        mock_uploaded_file = MockUploadedFile(_file)
-        result = json.loads(
-            self.controller.create(csv_file=mock_uploaded_file))
+        self._file_path = self._file_path.replace(self._file_name, _file_name)
+        result = self._upload_mocked_file()
+
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(Dataset.ID in result)
 
         results = self._test_summary_built(result)
         self._test_summary_no_group(results)
         results = json.loads(self.controller.info(self.dataset_id))
+        simpletypes = pickle.load(
+            open('tests/fixtures/good_eats_simpletypes.p', 'rb'))
 
         for column_name, column_schema in results[Dataset.SCHEMA].items():
             self.assertEqual(
-                column_schema[SIMPLETYPE], self.simpletypes[column_name])
+                column_schema[SIMPLETYPE], simpletypes[column_name])
 
     def test_create_from_url_failure(self):
         result = json.loads(self.controller.create(url=self._file_uri))
+
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(Datasets.ERROR in result)
 
-    @requires_internet
     def test_create_from_url(self):
-        result = json.loads(self.controller.create(url=self.url))
+        dframe = self.get_data('good_eats.csv')
+        with patch('pandas.read_csv', return_value=dframe) as mock:
+            result = json.loads(self.controller.create(url=self.url))
+
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(Dataset.ID in result)
 
+        results = json.loads(self.controller.show(result[Dataset.ID]))
+
+        self.assertEqual(len(results), self.NUM_ROWS)
         self._test_summary_built(result)
 
-    @requires_internet
     @requires_async
-    def test_create_from_not_csv_url(self):
+    @patch('pandas.read_csv', return_value=None)
+    def test_create_from_not_csv_url(self, read_csv):
         result = json.loads(self.controller.create(
             url='http://74.125.228.110/'))
+
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(Dataset.ID in result)
+
         results = json.loads(self.controller.show(result[Dataset.ID]))
+
         self.assertEqual(len(results), 0)
 
-    @requires_internet
-    def test_create_from_bad_url(self):
+    @patch('pandas.read_csv', return_value=None, side_effect=URLError(''))
+    def test_create_from_bad_url(self, read_csv):
         result = json.loads(self.controller.create(
             url='http://dsfskfjdks.com'))
+
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(Datasets.ERROR in result)
 
     def test_create_no_url_or_csv(self):
         result = json.loads(self.controller.create())
+
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(Datasets.ERROR in result)
 
     def test_show(self):
         self._post_file()
         results = json.loads(self.controller.show(self.dataset_id))
+
         self.assertTrue(isinstance(results, list))
         self.assertTrue(isinstance(results[0], dict))
         self.assertEqual(len(results), self.NUM_ROWS)
+
+    def test_show_csv(self):
+        self._post_file()
+        results = self.controller.show(self.dataset_id, format='csv')
+
+        self.assertTrue(isinstance(results, str))
+        # one for header, one for empty final line
+        self.assertEqual(len(results.split('\n')), self.NUM_ROWS + 2)
 
     @requires_async
     def test_show_async(self):
@@ -141,6 +159,7 @@ class TestDatasets(TestAbstractDatasets):
             if len(results):
                 break
             sleep(self.SLEEP_DELAY)
+
         self.assertTrue(isinstance(results, list))
         self.assertTrue(isinstance(results[0], dict))
         self.assertEqual(len(results), self.NUM_ROWS)
@@ -150,6 +169,7 @@ class TestDatasets(TestAbstractDatasets):
         self._post_calculations(['amount < 4'])
         results = json.loads(self.controller.show(self.dataset_id,
                              select='{"amount___4": 1}'))
+
         self.assertTrue(isinstance(results, list))
         self.assertTrue(isinstance(results[0], dict))
         self.assertEqual(len(results), self.NUM_ROWS)
@@ -157,12 +177,14 @@ class TestDatasets(TestAbstractDatasets):
     def test_info(self):
         self._post_file()
         results = json.loads(self.controller.info(self.dataset_id))
+
         self.assertTrue(isinstance(results, dict))
         self.assertTrue(Dataset.SCHEMA in results.keys())
         self.assertTrue(Dataset.NUM_ROWS in results.keys())
         self.assertEqual(results[Dataset.NUM_ROWS], self.NUM_ROWS)
         self.assertTrue(Dataset.NUM_COLUMNS in results.keys())
         self.assertEqual(results[Dataset.NUM_COLUMNS], self.NUM_COLS)
+        self.assertEqual(results[Dataset.STATE], Dataset.STATE_READY)
 
     def test_info_cardinality(self):
         self._post_file()
@@ -170,10 +192,14 @@ class TestDatasets(TestAbstractDatasets):
         self.assertTrue(isinstance(results, dict))
         self.assertTrue(Dataset.SCHEMA in results.keys())
         schema = results[Dataset.SCHEMA]
+
+        cardinalities = pickle.load(
+            open('tests/fixtures/good_eats_cardinalities.p', 'rb'))
+
         for key, column in schema.items():
-            self.assertTrue(Dataset.CARDINALITY in column.keys())
+            self.assertTrue(CARDINALITY in column.keys())
             self.assertEqual(
-                column[Dataset.CARDINALITY], self.cardinalities[key])
+                column[CARDINALITY], cardinalities[key])
 
     def test_info_after_row_update(self):
         self._post_file()
@@ -287,7 +313,7 @@ class TestDatasets(TestAbstractDatasets):
         results = self.controller.summary(
             self.dataset_id, select=self.controller.SELECT_ALL_FOR_SUMMARY)
         dataset = Dataset.find_one(self.dataset_id)
-        self.assertEqual(dataset.status, Dataset.STATE_PENDING)
+        self.assertEqual(dataset.state, Dataset.STATE_PENDING)
         results = self._test_summary_results(results)
         self.assertTrue(Datasets.ERROR in results.keys())
         self.assertTrue('not finished' in results[Datasets.ERROR])
@@ -621,7 +647,6 @@ class TestDatasets(TestAbstractDatasets):
     def test_multiple_date_formats(self):
         self._post_file('multiple_date_formats.csv')
         dataset = Dataset.find_one(self.dataset_id)
-        print dataset.dframe()
         self.assertEqual(dataset.num_rows, 2)
         self.assertEqual(len(dataset.schema.keys()), 4)
 
@@ -631,3 +656,24 @@ class TestDatasets(TestAbstractDatasets):
                                select=self.controller.SELECT_ALL_FOR_SUMMARY))
         for summary in summaries.values():
             self.assertFalse(summary is None)
+
+    @requires_async
+    def test_perishable_dataset(self):
+        perish_after = 2
+        result = self._upload_mocked_file(perish=perish_after)
+        self.assertTrue(isinstance(result, dict))
+        self.assertTrue(Dataset.ID in result)
+        dataset_id = result[Dataset.ID]
+
+        while True:
+            results = json.loads(self.controller.show(dataset_id))
+            if len(results):
+                self.assertTrue(len(results), self.NUM_ROWS)
+                break
+            sleep(self.SLEEP_DELAY)
+
+        # test that later it is deleted
+        sleep(perish_after)
+        result = json.loads(self.controller.show(dataset_id))
+        self.assertTrue(isinstance(result, dict))
+        self.assertTrue(Datasets.ERROR in result)

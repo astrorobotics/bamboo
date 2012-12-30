@@ -2,9 +2,8 @@ from celery.task import task
 
 from bamboo.core.calculator import Calculator
 from bamboo.core.frame import DATASET_ID
-from bamboo.core.parser import Parser
+from bamboo.lib.async import call_async
 from bamboo.lib.exceptions import ArgumentError
-from bamboo.lib.utils import call_async
 from bamboo.models.abstract_model import AbstractModel
 
 
@@ -34,16 +33,18 @@ def delete_task(calculation, dataset, slug):
 
 
 @task
-def calculate_task(calculation, dataset, calculator):
+def calculate_task(calculation, dataset):
     """Background task to run a calculation.
 
     :param calculation: Calculation to run.
     :param dataset: Dataset to run calculation on.
-    :param calculator: Calculator model instantiated for this dataset.
     """
     dataset.clear_summary_stats()
+
+    calculator = Calculator(dataset)
     calculator.calculate_column(calculation.formula, calculation.name,
                                 calculation.group)
+
     dataset_calcs = dataset.calculations()
     dataset_calc_names = [calc.name for calc in dataset_calcs]
     names_to_calcs = {calc.name: calc for calc in dataset_calcs}
@@ -60,7 +61,6 @@ def calculate_task(calculation, dataset, calculator):
 class Calculation(AbstractModel):
 
     __collectionname__ = 'calculations'
-    parser = Parser()
 
     DEPENDENCIES = 'dependencies'
     DEPENDENT_CALCULATIONS = 'dependent_calculations'
@@ -140,8 +140,7 @@ class Calculation(AbstractModel):
                     'dataset' % self.group)
             dataset = dataset.aggregated_datasets[self.group]
 
-        labels_to_slugs = dataset.build_labels_to_slugs()
-        slug = labels_to_slugs.get(self.name)
+        slug = dataset.schema.labels_to_slugs.get(self.name)
 
         if slug is None:
             raise ArgumentError(
@@ -186,7 +185,7 @@ class Calculation(AbstractModel):
         }
         super(self.__class__, self).save(record)
 
-        call_async(calculate_task, self, dataset, calculator)
+        call_async(calculate_task, self, dataset)
 
         return record
 
@@ -194,6 +193,21 @@ class Calculation(AbstractModel):
     def create(cls, dataset, formula, name, group=None):
         calculation = cls()
         return calculation.save(dataset, formula, name, group)
+
+    @classmethod
+    def create_from_list_or_dict(cls, dataset, calculations):
+        if isinstance(calculations, dict):
+            calculations = [calculations]
+
+        if not len(calculations) or not isinstance(calculations, list):
+            raise ArgumentError(
+                'Improper format for JSON calculations.')
+        try:
+            for calc in calculations:
+                cls.create(dataset, calc[cls.FORMULA], calc[cls.NAME],
+                           calc.get(cls.GROUP))
+        except KeyError as e:
+            raise ArgumentError('Required key %s not found in JSON' % e)
 
     @classmethod
     def find_one(cls, dataset_id, name, group=None):

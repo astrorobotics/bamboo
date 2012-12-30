@@ -18,8 +18,14 @@ class AbstractController(object):
 
     exposed = True
 
+    CSV = 'csv'
+    JSON = 'json'
+
     ERROR = 'error'
     SUCCESS = 'success'
+
+    DEFAULT_SUCCESS_STATUS_CODE = 200
+    ERROR_STATUS_CODE = 400
 
     def _add_cors_headers(self):
         cherrypy.response.headers['Access-Control-Allow-Origin'] = '*'
@@ -45,7 +51,7 @@ class AbstractController(object):
         return ''
 
     def dump_or_error(self, obj, error_message, callback=False,
-                      success_status_code=200):
+                      success_status_code=DEFAULT_SUCCESS_STATUS_CODE):
         """Dump JSON or return error message, potentially with callback.
 
         If `obj` is None `error_message` is returned and the HTTP status code
@@ -57,20 +63,23 @@ class AbstractController(object):
         :param error_message: Error message to return is object is None.
         :param callback: Callback string to wrap obj in for JSONP.
         :param success_status_code: The HTTP status code to return, default is
-            200.
+            DEFAULT_SUCCESS_STATUS_CODE.
 
         :returns: A JSON string wrapped with callback if callback is not False.
         """
-        cherrypy.response.status = success_status_code if obj else 400
+        cherrypy.response.headers['Content-Type'] = 'application/json'
+        cherrypy.response.status = success_status_code if obj else\
+            self.ERROR_STATUS_CODE
         if obj is None:
             obj = {self.ERROR: error_message}
-        json = dump_mongo_json(obj)
+        result = obj if isinstance(obj, str) else dump_mongo_json(obj)
         self._add_cors_headers()
 
-        return '%s(%s)' % (callback, json) if callback else json
+        return '%s(%s)' % (callback, result) if callback else result
 
     def _safe_get_and_call(self, dataset_id, action, callback=None,
-                           exceptions=(), success_status_code=200,
+                           exceptions=(),
+                           success_status_code=DEFAULT_SUCCESS_STATUS_CODE,
                            error = 'id not found', **kwargs):
         """Find dataset and call action with it and kwargs.
 
@@ -85,6 +94,8 @@ class AbstractController(object):
         :param callback: A JSONP callback that is passed through to
             dump_or_error.
         :param exceptions: A set of exceptions to additionally catch.
+        :param success_status_code: The HTTP status code to return, default is
+            DEFAULT_SUCCESS_STATUS_CODE.
         :param error: Default error string.
         :param kwargs: A set of keyword arguments that are passed to the
             action.

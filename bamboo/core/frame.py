@@ -1,5 +1,8 @@
+from cStringIO import StringIO
+
 from pandas import DataFrame, Series
 
+from bamboo.lib.datetools import recognize_dates, recognize_dates_from_schema
 from bamboo.lib.jsontools import series_to_jsondict
 from bamboo.lib.mongo import dump_mongo_json, mongo_prefix_reserved_key,\
     MONGO_RESERVED_KEYS
@@ -33,11 +36,22 @@ class BambooFrame(DataFrame):
     def decode_mongo_reserved_keys(self):
         """Decode MongoDB reserved keys in this DataFrame."""
         reserved_keys = self._column_intersect(MONGO_RESERVED_KEYS)
+        rename_dict = {}
+
         for key in reserved_keys:
             del self[key]
             prefixed_key = mongo_prefix_reserved_key(key)
             if prefixed_key in self.columns:
-                self.rename(columns={prefixed_key: key}, inplace=True)
+                rename_dict[prefixed_key] = key
+
+        if rename_dict:
+            self.rename(columns={prefixed_key: key}, inplace=True)
+
+    def recognize_dates(self):
+        return recognize_dates(self)
+
+    def recognize_dates_from_schema(self, schema):
+        return recognize_dates_from_schema(self, schema)
 
     def remove_bamboo_reserved_keys(self, keep_parent_ids=False):
         """Remove reserved internal columns in this DataFrame.
@@ -71,6 +85,11 @@ class BambooFrame(DataFrame):
         """Convert DataFrame to a list of dicts, then dump to JSON."""
         jsondict = self.to_jsondict()
         return dump_mongo_json(jsondict)
+
+    def to_csv_as_string(self):
+        buffer = StringIO()
+        self.to_csv(buffer, encoding='utf-8')
+        return buffer.getvalue()
 
     def _column_intersect(self, _list):
         """Return the intersection of `_list` and this DataFrame's columns."""

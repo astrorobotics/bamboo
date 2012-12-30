@@ -6,9 +6,9 @@ from pandas import concat
 from bamboo.core.aggregator import Aggregator
 from bamboo.core.frame import BambooFrame, NonUniqueJoinError
 from bamboo.core.parser import ParseError, Parser
-from bamboo.lib.datetools import recognize_dates_from_schema
 from bamboo.lib.mongo import MONGO_RESERVED_KEYS
-from bamboo.lib.utils import call_async, split_groups
+from bamboo.lib.async import call_async
+from bamboo.lib.utils import split_groups
 
 
 class Calculator(object):
@@ -135,13 +135,13 @@ class Calculator(object):
         self._ensure_dframe()
         self._ensure_ready()
 
-        labels_to_slugs = self.dataset.build_labels_to_slugs()
+        labels_to_slugs = self.dataset.schema.labels_to_slugs
         new_dframe_raw = self._dframe_from_update(new_data, labels_to_slugs)
 
         self._check_update_is_valid(new_dframe_raw)
 
-        new_dframe = recognize_dates_from_schema(self.dataset.schema,
-                                                 new_dframe_raw)
+        new_dframe = new_dframe_raw.recognize_dates_from_schema(
+            self.dataset.schema)
 
         new_dframe, aggregations = self._add_calcs_and_find_aggregations(
             new_dframe, labels_to_slugs)
@@ -370,7 +370,7 @@ class Calculator(object):
         calculations = set([calc.name for calc in calculations])
 
         for group, dataset in self.dataset.aggregated_datasets.items():
-            labels_to_slugs = dataset.build_labels_to_slugs()
+            labels_to_slugs = dataset.schema.labels_to_slugs
 
             for calc in list(
                     set(labels_to_slugs.keys()).intersection(calculations)):

@@ -5,18 +5,17 @@ from time import gmtime, strftime
 
 from celery.task import task
 from celery.contrib.methods import task as class_task
-from pandas import concat
+from pandas import concat, Series
 
 from bamboo.config.settings import DB_READ_BATCH_SIZE
 from bamboo.core.calculator import Calculator
 from bamboo.core.frame import BambooFrame, BAMBOO_RESERVED_KEY_PREFIX,\
     DATASET_ID, DATASET_OBSERVATION_ID, PARENT_DATASET_ID
 from bamboo.core.summary import summarize
+from bamboo.lib.async import call_async
 from bamboo.lib.exceptions import ArgumentError
-from bamboo.lib.mongo import reserve_encoded
-from bamboo.lib.schema_builder import DIMENSION, OLAP_TYPE,\
-    schema_from_data_and_dtypes
-from bamboo.lib.utils import call_async, split_groups
+from bamboo.lib.schema_builder import Schema
+from bamboo.lib.utils import split_groups
 from bamboo.models.abstract_model import AbstractModel
 from bamboo.models.calculation import Calculation
 from bamboo.models.observation import Observation
@@ -40,7 +39,6 @@ class Dataset(AbstractModel):
     # metadata
     AGGREGATED_DATASETS = BAMBOO_RESERVED_KEY_PREFIX + 'linked_datasets'
     ATTRIBUTION = 'attribution'
-    CARDINALITY = 'cardinality'
     CREATED_AT = 'created_at'
     DESCRIPTION = 'description'
     ID = 'id'
@@ -72,7 +70,12 @@ class Dataset(AbstractModel):
 
     @property
     def schema(self):
-        return self.record.get(self.SCHEMA)
+        schema_dict = {}
+
+        if self.record:
+            schema_dict = self.record.get(self.SCHEMA)
+
+        return Schema.safe_init(schema_dict)
 
     @property
     def stats(self):
@@ -115,11 +118,10 @@ class Dataset(AbstractModel):
         return [self.find_one(_id) for _id in ids]
 
     def is_factor(self, col):
-        return self.schema[col][OLAP_TYPE] == DIMENSION
+        return self.schema.is_dimension(col)
 
     def cardinality(self, col):
-        if self.is_factor(col):
-            return self.schema[col][self.CARDINALITY]
+        return self.schema.cardinality(col)
 
     def dframe(self, query=None, select=None, keep_parent_ids=False,
                limit=0, order_by=None, padded=False):
@@ -216,9 +218,9 @@ class Dataset(AbstractModel):
 
         return super(self.__class__, self).save(record)
 
-    def delete(self):
+    def delete(self, countdown=0):
         """Delete this dataset."""
-        call_async(delete_task, self)
+        call_async(delete_task, self, countdown=countdown)
 
     @class_task
     def summarize(self, query=None, select=None,
@@ -288,14 +290,10 @@ class Dataset(AbstractModel):
 
         :param dframe: The DataFrame whose schema to merge with the current
             schema.
+        :param overwrite: If true replace schema, otherwise update.
         :param set_num_columns: If True also set the number of columns.
         """
-        current_schema = self.schema
-        new_schema = schema_from_data_and_dtypes(self, dframe)
-        if current_schema and not overwrite:
-            # merge new schema with existing schema
-            current_schema.update(new_schema)
-            new_schema = current_schema
+        new_schema = self.schema.rebuild(dframe, overwrite)
         self.set_schema(new_schema,
                         set_num_columns=(set_num_columns or overwrite))
 
@@ -319,13 +317,8 @@ class Dataset(AbstractModel):
             self.UPDATED_AT: self.record.get(self.UPDATED_AT),
             self.NUM_COLUMNS: self.num_columns,
             self.NUM_ROWS: self.num_rows,
+            self.STATE: self.state,
         }
-
-    def build_labels_to_slugs(self):
-        """Build dict from column labels to slugs."""
-        return {
-            column_attrs[self.LABEL]: reserve_encoded(column_name) for
-            (column_name, column_attrs) in self.schema.items()}
 
     def observations(self, query=None, select=None, limit=0, order_by=None,
                      as_cursor=False):
@@ -375,6 +368,7 @@ class Dataset(AbstractModel):
         """
         self.build_schema(dframe, overwrite=overwrite,
                           set_num_columns=set_num_columns)
+        dframe = self.add_id_column_to_dframe(dframe)
         Observation.delete_all(self)
         return self.save_observations(dframe)
 
@@ -403,6 +397,7 @@ class Dataset(AbstractModel):
         merged_dframe = merged_dframe.join_dataset(other, on)
         merged_dataset = self.__class__()
         merged_dataset.save()
+
         if self.num_rows and other.num_rows:
             merged_dataset.save_observations(merged_dframe)
         else:
@@ -419,3 +414,13 @@ class Dataset(AbstractModel):
     def reload(self):
         self.record = Dataset.find_one(self.dataset_id).record
         return self
+
+    def add_id_column_to_dframe(self, dframe):
+        encoded_columns_map = self.schema.rename_map_for_dframe(dframe)
+
+        dframe = dframe.rename(columns=encoded_columns_map)
+
+        id_column = Series([self.dataset_observation_id] * len(dframe))
+        id_column.name = DATASET_OBSERVATION_ID
+
+        return dframe.join(id_column)

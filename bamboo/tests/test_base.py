@@ -6,6 +6,7 @@ from pandas import read_csv
 
 from bamboo.config.db import Database
 from bamboo.config.settings import TEST_DATABASE_NAME
+from bamboo.tests.mock import MockUploadedFile
 
 
 class TestBase(unittest.TestCase):
@@ -18,6 +19,7 @@ class TestBase(unittest.TestCase):
         'good_eats_with_calculations.csv',
         'kenya_secondary_schools_2007.csv',
         'soil_samples.csv',
+        'water_points.csv',
     ]
 
     test_data = {}
@@ -31,6 +33,13 @@ class TestBase(unittest.TestCase):
     def tearDown(self):
         self._drop_database()
 
+    def get_data(self, dataset_name):
+        data = self.test_data.get(dataset_name)
+        if data is None:
+            data = self.test_data[dataset_name] = read_csv(
+                '%s%s' % (self._local_fixture_prefix(), dataset_name))
+        return data
+
     def _create_database(self):
         Database.db(TEST_DATABASE_NAME)
 
@@ -42,6 +51,8 @@ class TestBase(unittest.TestCase):
 
     def _load_test_data(self):
         for dataset_name in self.TEST_DATASETS:
-            self.test_data[dataset_name] = read_csv(
-                '%s%s' % (self._local_fixture_prefix(), dataset_name))
             self.test_dataset_ids[dataset_name] = uuid.uuid4().hex
+
+    def _file_mock(self, file_path):
+        _file = open(file_path, 'r')
+        return MockUploadedFile(_file)
