@@ -15,7 +15,6 @@ from bamboo.core.summary import summarize
 from bamboo.lib.async import call_async
 from bamboo.lib.exceptions import ArgumentError
 from bamboo.lib.schema_builder import Schema
-from bamboo.lib.utils import split_groups
 from bamboo.models.abstract_model import AbstractModel
 from bamboo.models.calculation import Calculation
 from bamboo.models.observation import Observation
@@ -48,6 +47,7 @@ class Dataset(AbstractModel):
     NUM_COLUMNS = 'num_columns'
     NUM_ROWS = 'num_rows'
     MERGED_DATASETS = 'merged_datasets'
+    PENDING_UPDATES = 'pending_updates'
     SCHEMA = 'schema'
     UPDATED_AT = 'updated_at'
 
@@ -76,6 +76,10 @@ class Dataset(AbstractModel):
             schema_dict = self.record.get(self.SCHEMA)
 
         return Schema.safe_init(schema_dict)
+
+    @property
+    def labels(self):
+        return [column[self.LABEL] for column in self.schema.values()]
 
     @property
     def stats(self):
@@ -114,6 +118,10 @@ class Dataset(AbstractModel):
     def merged_datasets(self):
         return self._linked_datasets(self.merged_dataset_ids)
 
+    @property
+    def pending_updates(self):
+        return self.record[self.PENDING_UPDATES]
+
     def _linked_datasets(self, ids):
         return [self.find_one(_id) for _id in ids]
 
@@ -123,8 +131,13 @@ class Dataset(AbstractModel):
     def cardinality(self, col):
         return self.schema.cardinality(col)
 
-    def dframe(self, query=None, select=None, keep_parent_ids=False,
-               limit=0, order_by=None, padded=False):
+    def aggregated_dataset(self, groups):
+        _id = self.aggregated_datasets_dict.get(self.join_groups(groups))
+
+        return self.find_one(_id) if _id else None
+
+    def dframe(self, query=None, select=None, distinct=None,
+               keep_parent_ids=False, limit=0, order_by=None, padded=False):
         """Fetch the dframe for this dataset.
 
         :param select: An optional select to limit the fields in the dframe.
@@ -147,19 +160,9 @@ class Dataset(AbstractModel):
             query=query, select=select, limit=limit, order_by=order_by,
             as_cursor=True)
 
-        batches = int(ceil(float(observations.count(with_limit_and_skip=True))
-                      / DB_READ_BATCH_SIZE))
-        dframes = []
+        dframe = self._batch_read_dframe_from_cursor(
+            observations, distinct, limit)
 
-        for batch in xrange(0, batches):
-            start = batch * DB_READ_BATCH_SIZE
-            end = (batch + 1) * DB_READ_BATCH_SIZE
-            if limit > 0 and end > limit:
-                end = limit
-            dframes.append(BambooFrame([ob for ob in observations[start:end]]))
-            observations.rewind()
-
-        dframe = BambooFrame(concat(dframes) if len(dframes) else [])
         dframe.decode_mongo_reserved_keys()
         dframe.remove_bamboo_reserved_keys(keep_parent_ids)
 
@@ -172,6 +175,39 @@ class Dataset(AbstractModel):
                 dframe = self.place_holder_dframe()
 
         return dframe
+
+    def _batch_read_dframe_from_cursor(self, observations, distinct, limit):
+        if distinct:
+            observations = observations.distinct(distinct)
+
+        dframes = []
+        batch = 0
+
+        while True:
+            start = batch * DB_READ_BATCH_SIZE
+            end = (batch + 1) * DB_READ_BATCH_SIZE
+
+            if limit > 0 and end > limit:
+                end = limit
+
+            # if there is a limit and we are done
+            if start >= end:
+                break
+
+            current_observations = [ob for ob in observations[start:end]]
+
+            # if the batches exhausted the data
+            if not len(current_observations):
+                break
+
+            dframes.append(BambooFrame(current_observations))
+
+            if not distinct:
+                observations.rewind()
+
+            batch += 1
+
+        return BambooFrame(concat(dframes) if len(dframes) else [])
 
     def add_joined_dataset(self, new_data):
         """Add the ID of `new_dataset` to the list of joined datasets."""
@@ -214,6 +250,7 @@ class Dataset(AbstractModel):
             self.AGGREGATED_DATASETS: {},
             self.CREATED_AT: strftime("%Y-%m-%d %H:%M:%S", gmtime()),
             self.STATE: self.STATE_PENDING,
+            self.PENDING_UPDATES: [],
         }
 
         return super(self.__class__, self).save(record)
@@ -245,7 +282,7 @@ class Dataset(AbstractModel):
             group_str = self.ALL
 
         # split group in case of multigroups
-        groups = split_groups(group_str)
+        groups = self.split_groups(group_str)
 
         # if select append groups to select
         if select:
@@ -300,8 +337,10 @@ class Dataset(AbstractModel):
     def set_schema(self, schema, set_num_columns=True):
         """Set the schema from an existing one."""
         update_dict = {self.SCHEMA: schema}
+
         if set_num_columns:
             update_dict.update({self.NUM_COLUMNS: len(schema.keys())})
+
         self.update(update_dict)
 
     def info(self):
@@ -349,9 +388,24 @@ class Dataset(AbstractModel):
 
     def add_observations(self, json_data):
         """Update `dataset` with new `data`."""
+        record = self.record
+        update_id = uuid.uuid4().hex
+        self.add_pending_update(update_id)
+
+        new_data = json.loads(json_data)
         calculator = Calculator(self)
-        call_async(calculator.calculate_updates, calculator,
-                   json.loads(json_data))
+
+        new_dframe_raw = calculator.dframe_from_update(
+            new_data, self.schema.labels_to_slugs)
+        calculator._check_update_is_valid(new_dframe_raw)
+
+        call_async(calculator.calculate_updates, calculator, new_data,
+                   new_dframe_raw=new_dframe_raw, update_id=update_id)
+
+    def add_pending_update(self, update_id):
+        self.collection.update(
+            {'_id': self.record['_id']},
+            {'$push': {self.PENDING_UPDATES: update_id}})
 
     def save_observations(self, dframe):
         """Save rows in `dframe` for this dataset."""
@@ -370,6 +424,7 @@ class Dataset(AbstractModel):
                           set_num_columns=set_num_columns)
         dframe = self.add_id_column_to_dframe(dframe)
         Observation.delete_all(self)
+
         return self.save_observations(dframe)
 
     def drop_columns(self, columns):
@@ -395,8 +450,7 @@ class Dataset(AbstractModel):
             merged_dframe = self.place_holder_dframe()
 
         merged_dframe = merged_dframe.join_dataset(other, on)
-        merged_dataset = self.__class__()
-        merged_dataset.save()
+        merged_dataset = self.create()
 
         if self.num_rows and other.num_rows:
             merged_dataset.save_observations(merged_dframe)
@@ -412,7 +466,9 @@ class Dataset(AbstractModel):
         return merged_dataset
 
     def reload(self):
-        self.record = Dataset.find_one(self.dataset_id).record
+        dataset = Dataset.find_one(self.dataset_id)
+        self.record = dataset.record
+
         return self
 
     def add_id_column_to_dframe(self, dframe):
@@ -424,3 +480,26 @@ class Dataset(AbstractModel):
         id_column.name = DATASET_OBSERVATION_ID
 
         return dframe.join(id_column)
+
+    def new_agg_dataset(self, dframe, groups):
+        agg_dataset = self.create()
+        agg_dataset.save_observations(dframe)
+        group_str = self.join_groups(groups)
+
+        # store a link to the new dataset
+        agg_datasets_dict = self.aggregated_datasets_dict
+        agg_datasets_dict[group_str] = agg_dataset.dataset_id
+        self.update({
+            self.AGGREGATED_DATASETS: agg_datasets_dict})
+
+    def has_pending_updates(self, update_id):
+        self.reload()
+        pending_updates = self.pending_updates
+
+        return pending_updates[0] != update_id and len(
+            set(pending_updates) - set([update_id]))
+
+    def update_complete(self, update_id):
+        self.collection.update(
+            {'_id': self.record['_id']},
+            {'$pull': {self.PENDING_UPDATES: update_id}})

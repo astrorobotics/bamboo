@@ -21,13 +21,23 @@ class AbstractModel(object):
 
     __collection__ = None
 
+    # delimiter when passing multiple groups as a string
+    GROUP_DELIMITER = ','
+
+    ERROR_MESSAGE = 'error_message'
+
     STATE = 'state'
+    STATE_FAILED = 'failed'
     STATE_PENDING = 'pending'
     STATE_READY = 'ready'
 
     @property
     def state(self):
         return self.record[self.STATE]
+
+    @property
+    def error_message(self):
+        return self.record.get(self.ERROR_MESSAGE)
 
     @property
     def is_ready(self):
@@ -43,8 +53,24 @@ class AbstractModel(object):
         """
         return Database.db()[collection_name]
 
+    def failed(self, message=None):
+        """Perist the state of the current instance to `STATE_FAILED`.
+
+        :params message: A string store as the error message, default None.
+        """
+        doc = {self.STATE: self.STATE_FAILED}
+
+        if message:
+            doc.update({self.ERROR_MESSAGE: message})
+
+        self.update(doc)
+
+    def pending(self):
+        """Perist the state of the current instance to `STATE_PENDING`"""
+        self.update({self.STATE: self.STATE_PENDING})
+
     def ready(self):
-        """Perist the state of the current instance to STATE_READY"""
+        """Perist the state of the current instance to `STATE_READY`"""
         self.update({self.STATE: self.STATE_READY})
 
     @classproperty
@@ -58,7 +84,7 @@ class AbstractModel(object):
         return cls.__collection__
 
     @classmethod
-    def find(cls, query, select=None, as_dict=False,
+    def find(cls, query, select=None, distinct=None, as_dict=False,
              limit=0, order_by=None, as_cursor=False):
         """An interface to MongoDB's find functionality.
 
@@ -83,14 +109,14 @@ class AbstractModel(object):
                 sort_dir, field = 1, order_by
             order_by = [(field, sort_dir)]
 
-        records = cls.collection.find(
+        cursor = cls.collection.find(
             query, select, sort=order_by, limit=limit)
 
         if as_cursor:
-            return records
+            return cursor
         else:
-            return [record for record in records] if as_dict else [
-                cls(record) for record in records
+            return [record for record in cursor] if as_dict else [
+                cls(record) for record in cursor
             ]
 
     @classmethod
@@ -120,6 +146,11 @@ class AbstractModel(object):
             BAMBOO_RESERVED_KEYS
         }
         return remove_mongo_reserved_keys(_dict)
+
+    def create(self):
+        model = self.__class__()
+        model.save()
+        return model
 
     def delete(self, query):
         """Delete rows matching query.
@@ -153,8 +184,9 @@ class AbstractModel(object):
         record = dict_for_mongo(record)
         id_dict = {'_id': self.record['_id']}
         self.collection.update(id_dict, {'$set': record}, safe=True)
-        self.record = super(
-            self.__class__, self.__class__).find_one(id_dict).record
+
+        # Set record to the latest record from the database
+        self.record = self.__class__.collection.find_one(id_dict)
 
     def batch_save(self, dframe):
         """Save records in batches to avoid document size maximum setting.
@@ -165,6 +197,13 @@ class AbstractModel(object):
             self.collection.insert(records, safe=True)
 
         self._batch_command(command, dframe)
+
+    def split_groups(self, group_str):
+        """Split a string based on the group delimiter"""
+        return group_str.split(self.GROUP_DELIMITER) if group_str else []
+
+    def join_groups(self, groups):
+        return self.GROUP_DELIMITER.join(groups)
 
     def _batch_command(self, command, dframe):
         batches = int(ceil(float(len(dframe)) / DB_SAVE_BATCH_SIZE))

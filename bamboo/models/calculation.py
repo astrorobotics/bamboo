@@ -1,9 +1,12 @@
-from celery.task import task
+import traceback
+
+from celery.task import Task, task
 
 from bamboo.core.calculator import Calculator
 from bamboo.core.frame import DATASET_ID
 from bamboo.lib.async import call_async
 from bamboo.lib.exceptions import ArgumentError
+from bamboo.lib.schema_builder import make_unique
 from bamboo.models.abstract_model import AbstractModel
 
 
@@ -32,28 +35,35 @@ def delete_task(calculation, dataset, slug):
     })
 
 
-@task
+class CalculateTask(Task):
+    def after_return(self, status, retval, task_id, args, kwargs, einfo=None):
+        if status == 'FAILURE':
+            calculation = args[0]
+            calculation.failed(traceback.format_exc())
+
+
+@task(base=CalculateTask, default_retry_delay=5, max_retries=10)
 def calculate_task(calculation, dataset):
     """Background task to run a calculation.
+
+    Set calculation to failed and raise if an exception occurs.
 
     :param calculation: Calculation to run.
     :param dataset: Dataset to run calculation on.
     """
+    # block until other calculations for this dataset are finished
+    calculation.restart_if_has_pending(dataset)
     dataset.clear_summary_stats()
 
     calculator = Calculator(dataset)
     calculator.calculate_column(calculation.formula, calculation.name,
-                                calculation.group)
+                                calculation.groups_as_list)
+    calculation.add_dependencies(dataset, calculator.dependent_columns())
 
-    dataset_calcs = dataset.calculations()
-    dataset_calc_names = [calc.name for calc in dataset_calcs]
-    names_to_calcs = {calc.name: calc for calc in dataset_calcs}
-
-    for column_name in calculator.parser.context.dependent_columns:
-        calc = names_to_calcs.get(column_name)
-        if calc:
-            calculation.add_dependency(calc.name)
-            calc.add_dependent_calculation(calculation.name)
+    if calculation.aggregation is not None:
+        dataset.reload()
+        aggregated_id = dataset.aggregated_datasets_dict[calculation.group]
+        calculation.set_aggregation_id(aggregated_id)
 
     calculation.ready()
 
@@ -62,11 +72,21 @@ class Calculation(AbstractModel):
 
     __collectionname__ = 'calculations'
 
+    AGGREGATION = 'aggregation'
+    AGGREGATION_ID = 'aggregation_id'
     DEPENDENCIES = 'dependencies'
     DEPENDENT_CALCULATIONS = 'dependent_calculations'
     FORMULA = 'formula'
     GROUP = 'group'
     NAME = 'name'
+
+    @property
+    def aggregation(self):
+        return self.record[self.AGGREGATION]
+
+    @property
+    def aggregation_id(self):
+        return self.record.get(self.AGGREGATION_ID)
 
     @property
     def dataset_id(self):
@@ -79,6 +99,10 @@ class Calculation(AbstractModel):
     @property
     def group(self):
         return self.record[self.GROUP]
+
+    @property
+    def groups_as_list(self):
+        return self.split_groups(self.group)
 
     @property
     def name(self):
@@ -115,6 +139,9 @@ class Calculation(AbstractModel):
             calculation = self.find_one(self.dataset_id, name)
             calculation.remove_dependent_calculation(self.name)
 
+    def set_aggregation_id(self, _id):
+        self.update({self.AGGREGATION_ID: _id})
+
     def delete(self, dataset):
         """Delete this calculation.
 
@@ -148,13 +175,13 @@ class Calculation(AbstractModel):
 
         call_async(delete_task, self, dataset, slug)
 
-    def save(self, dataset, formula, name, group=None):
+    def save(self, dataset, formula, name, group_str=None):
         """Parse, save, and calculate a formula.
 
-        Validate `formula` and `group` for the given `dataset`. If the formula
-        and group are valid for the dataset, then save a new calculation for
-        them under `name`. Finally, create a background task to compute the
-        calculation.
+        Validate `formula` and `group_str` for the given `dataset`. If the
+        formula and group are valid for the dataset, then save a new
+        calculation for them under `name`. Finally, create a background task
+        to compute the calculation.
 
         Calculations are initially saved in a **pending** state, after the
         calculation has finished processing it will be in a **ready** state.
@@ -162,24 +189,30 @@ class Calculation(AbstractModel):
         :param dataset: The DataSet to save.
         :param formula: The formula to save.
         :param name: The name of the formula.
-        :param group: The group of the formula.
-        :type group: String, list or strings, or None.
+        :param group_str: Columns to group on.
+        :type group_str: String, list or strings, or None.
 
         :raises: `ParseError` if an invalid formula was supplied.
         """
         calculator = Calculator(dataset)
 
         # ensure that the formula is parsable
-        aggregation = calculator.validate(formula, group)
+        groups = self.split_groups(group_str) if group_str else []
+        aggregation = calculator.validate(formula, groups)
 
-        # set group if aggregation and group unset
-        if aggregation and not group:
-            group = ''
+        if aggregation:
+            # set group if aggregation and group unset
+            if not group_str:
+                group_str = ''
+        else:
+            # ensure the name is unique
+            name = make_unique(name, dataset.labels + dataset.schema.keys())
 
         record = {
             DATASET_ID: dataset.dataset_id,
+            self.AGGREGATION: aggregation,
             self.FORMULA: formula,
-            self.GROUP: group,
+            self.GROUP: group_str,
             self.NAME: name,
             self.STATE: self.STATE_PENDING,
         }
@@ -223,4 +256,23 @@ class Calculation(AbstractModel):
 
     @classmethod
     def find(cls, dataset):
-        return super(cls, cls).find({DATASET_ID: dataset.dataset_id})
+        return super(cls, cls).find({DATASET_ID: dataset.dataset_id},
+                                    order_by='name')
+
+    def restart_if_has_pending(self, dataset):
+        unfinished_calcs = [
+            calc for calc in dataset.calculations() if not calc.is_ready]
+
+        if len(unfinished_calcs) and self.name != unfinished_calcs[0].name:
+            raise calculate_task.retry()
+
+    def add_dependencies(self, dataset, dependent_columns):
+        """Store calculation dependencies."""
+        calculations = dataset.calculations()
+        names_to_calcs = {calc.name: calc for calc in calculations}
+
+        for column_name in dependent_columns:
+            calc = names_to_calcs.get(column_name)
+            if calc:
+                self.add_dependency(calc.name)
+                calc.add_dependent_calculation(self.name)

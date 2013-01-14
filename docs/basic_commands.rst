@@ -36,8 +36,8 @@ Upload data from a URL to *bamboo*
         "id": "8a3d74711475d8a51c84484fe73f24bd151242ea"
     }
 
-Upload data from a file to *bamboo*
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Upload data from a CSV file to *bamboo*
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 given the file ``/home/modilabs/good_eats.csv`` exists locally on your
 filesystem
@@ -52,6 +52,41 @@ filesystem
 
     {
         "id": "8a3d74711475d8a51c84484fe73f24bd151242ea"
+    }
+
+Upload data from a JSON file to *bamboo*
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+given the file ``/home/modilabs/good_eats.json`` exists locally on your
+filesystem
+
+.. code-block:: sh
+
+    curl -X POST -F json_file=@/home/modilabs/good_eats.json http://bamboo.io/datasets
+
+**returns:**
+
+.. code-block:: javascript
+
+    {
+        "id": "8a3d74711475d8a51c84484fe73f24bd151242ea"
+    }
+
+Deleting a dataset
+^^^^^^^^^^^^^^^^^^
+
+To delete a dataset pass the dataset ID to a delete request.
+
+.. code-block:: sh
+
+    curl -X DELETE http://bamboo.io/datasets/8a3d74711475d8a51c84484fe73f24bd151242ea
+
+**returns:**
+
+.. code-block:: javascript
+
+    {
+        "success": "deleted dataset: 8a3d74711475d8a51c84484fe73f24bd151242ea"
     }
 
 Retrieve information about a dataset
@@ -180,6 +215,24 @@ column.
         {"rating": "epic_eat"}
     ]
 
+By ID with distinct
+^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: sh
+
+    curl -g http://bamboo.io/datasets/8a3d74711475d8a51c84484fe73f24bd151242ea?select='{"rating":1}&distinct=rating'
+
+This returns the distinct keys for the results of the passed query as a JSON
+array.
+
+**returns:**
+
+.. code-block:: javascript
+
+    [
+        "delectible",
+        "epic_eat"
+    ]
 
 By ID and query
 ^^^^^^^^^^^^^^^
@@ -631,7 +684,7 @@ calculation/[dataset ID]
 .. code-block:: javascript
 
     {
-        "success": "deleted dataset: 8a3d74711475d8a51c84484fe73f24bd151242ea"
+        "success": "deleted calculation: 'amount_less_than_10' for dataset: 8a3d74711475d8a51c84484fe73f24bd151242ea"
     }
 
 Store aggregation formula

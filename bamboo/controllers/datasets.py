@@ -6,7 +6,7 @@ from bamboo.core.merge import merge_dataset_ids, MergeError
 from bamboo.core.summary import ColumnTypeError
 from bamboo.lib.exceptions import ArgumentError
 from bamboo.lib.io import create_dataset_from_url, create_dataset_from_csv,\
-    create_dataset_from_schema
+    create_dataset_from_json, create_dataset_from_schema
 from bamboo.lib.utils import parse_int
 from bamboo.models.dataset import Dataset
 
@@ -89,16 +89,17 @@ class Datasets(AbstractController):
         :raises: `ArgumentError` if no select is supplied or dataset is not in
             ready state.
         """
-        limit = parse_int(limit, 0)
-
-        def _action(dataset, query=query, select=select, group=group,
-                    limit=limit, order_by=order_by):
+        def _action(dataset, select=select, limit=limit):
             if not dataset.is_ready:
                 raise ArgumentError('dataset is not finished importing')
             if select is None:
                 raise ArgumentError('no select')
+
+            limit = parse_int(limit, 0)
+
             if select == self.SELECT_ALL_FOR_SUMMARY:
                 select = None
+
             return dataset.summarize(dataset, query, select,
                                      group, limit=limit,
                                      order_by=order_by)
@@ -121,7 +122,7 @@ class Datasets(AbstractController):
 
         return self._safe_get_and_call(dataset_id, _action, callback=callback)
 
-    def show(self, dataset_id, query=None, select=None,
+    def show(self, dataset_id, query=None, select=None, distinct=None,
              limit=0, order_by=None, format=None, callback=False):
         """ Return rows for `dataset_id`, matching the passed parameters.
 
@@ -132,6 +133,7 @@ class Datasets(AbstractController):
         :param dataset_id: The dataset ID of the dataset to return.
         :param select: This is a required argument, it can be 'all' or a
             MongoDB JSON query
+        :param distinct: A field to return distinct results for.
         :param query: If passed restrict results to rows matching this query.
         :param limit: If passed limit the rows to this number.
         :param order_by: If passed order the result using this column.
@@ -143,16 +145,23 @@ class Datasets(AbstractController):
             string of the rows matching the parameters.
         """
         limit = parse_int(limit, 0)
+        content_type = self.CSV if format == self.CSV else self.JSON
 
-        def _action(dataset, query=query, select=select,
-                    limit=limit, order_by=order_by, format=format):
+        def _action(dataset):
             dframe = dataset.dframe(
-                query=query, select=select,
+                query=query, select=select, distinct=distinct,
                 limit=limit, order_by=order_by)
-            return dframe.__getattribute__(
-                'to_csv_as_string' if format == self.CSV else 'to_jsondict')()
 
-        return self._safe_get_and_call(dataset_id, _action, callback=callback)
+            if distinct:
+                return sorted(dframe[0].tolist())
+
+            if content_type == self.CSV:
+                return dframe.to_csv_as_string()
+            else:
+                return dframe.to_jsondict()
+
+        return self._safe_get_and_call(
+            dataset_id, _action, callback=callback, content_type=content_type)
 
     def merge(self, datasets=None):
         """Merge the datasets with the dataset_ids in `datasets`.
@@ -164,18 +173,16 @@ class Datasets(AbstractController):
             dataset IDs were passed.  Otherwise, the ID of the new merged
             dataset created by combining the datasets provided as an argument.
         """
-        result = None
-        error = 'merge failed'
 
-        try:
+        def _action(dataset):
             dataset = merge_dataset_ids(datasets)
-            result = {Dataset.ID: dataset.dataset_id}
-        except (ValueError, MergeError) as err:
-            error = err.__str__()
+            return {Dataset.ID: dataset.dataset_id}
 
-        return self.dump_or_error(result, error)
+        return self._safe_get_and_call(
+            None, _action, exceptions=(MergeError,), error = 'merge failed')
 
-    def create(self, url=None, csv_file=None, schema=None, perish=0):
+    def create(self, url=None, csv_file=None, json_file=None, schema=None,
+               perish=0):
         """Create a dataset by URL, CSV or schema file.
 
         If `url` is provided, create a dataset by downloading a CSV from that
@@ -205,9 +212,11 @@ class Datasets(AbstractController):
         :param url: A URL to load a CSV file from. The URL must point to a CSV
             file.
         :param csv_file: An uploaded CSV file to read from.
+        :param json_file: An uploaded JSON file to read from.
         :param schema: A SDF schema file (JSON)
+        :param perish: Number of seconds after which to dlete the dataset.
 
-        :returns: An error message ff `url`, `csv_file`, or `scehma` are not
+        :returns: An error message if `url`, `csv_file`, or `scehma` are not
             provided. An error message if an improperly formatted value raises
             a ValueError, e.g. an improperly formatted CSV file. An error
             message if the URL could not be loaded. Otherwise returns a JSON
@@ -224,6 +233,8 @@ class Datasets(AbstractController):
                 dataset = create_dataset_from_url(url)
             elif csv_file:
                 dataset = create_dataset_from_csv(csv_file)
+            elif json_file:
+                dataset = create_dataset_from_json(json_file)
             elif schema:
                 dataset = create_dataset_from_schema(schema)
             if dataset:
@@ -237,7 +248,8 @@ class Datasets(AbstractController):
         except IOError:
             error = 'could not get a filehandle for: %s' % csv_file
 
-        return self.dump_or_error(result, error, success_status_code=201)
+        self.set_response_params(result, success_status_code=201)
+        return self.dump_or_error(result, error)
 
     def update(self, dataset_id, update):
         """Update the `dataset_id` with the new rows as JSON.
@@ -266,8 +278,9 @@ class Datasets(AbstractController):
         :returns: An error if any column is not in the dataset. Otherwise a
             success message.
         """
-        def _action(dataset, columns=columns):
+        def _action(dataset):
             dataset.drop_columns(columns)
+
             return {self.SUCCESS: 'in dataset %s dropped columns: %s' %
                     (dataset.dataset_id, columns)}
 
@@ -286,10 +299,12 @@ class Datasets(AbstractController):
 
         :returns: Success and merged dataset ID or error message.
         """
-        def _action(dataset, other_dataset_id=other_dataset_id, on=None):
+        def _action(dataset):
             other_dataset = Dataset.find_one(other_dataset_id)
+
             if other_dataset.record:
                 merged_dataset = dataset.join(other_dataset, on)
+
                 return {
                     self.SUCCESS: 'joined dataset %s to %s on %s' % (
                         other_dataset_id, dataset.dataset_id, on),
@@ -297,5 +312,4 @@ class Datasets(AbstractController):
                 }
 
         return self._safe_get_and_call(
-            dataset_id, _action, other_dataset_id=other_dataset_id, on=on,
-            exceptions=(KeyError, NonUniqueJoinError))
+            dataset_id, _action, exceptions=(KeyError, NonUniqueJoinError))

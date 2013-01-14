@@ -1,6 +1,8 @@
+from math import isnan
+
 from pandas import concat, DataFrame, Series
 
-from bamboo.lib.utils import parse_float
+from bamboo.lib.utils import minint, parse_float
 
 
 class Aggregation(object):
@@ -111,20 +113,35 @@ class ArgMaxAggregation(Aggregation):
 
     def group(self):
         """For when aggregation is called with a group parameter."""
-        indices = self.column.apply(lambda value: parse_float(value, value)
-                                    ).reset_index().set_index(self.name)
+        self.column = self.column.apply(lambda value: parse_float(value))
+        group_dframe = self.dframe[self.groups].join(self.column)
+        indices = group_dframe.reset_index().set_index(
+            self.groups + [self.name])
 
         def max_index_for_row(row):
-            return indices.get_value(row[self.name], 'index').max()
+            groups = row[self.groups]
+            value = row[self.name]
 
-        groupby_max = self._groupby().max()
-        column = groupby_max.apply(max_index_for_row, axis=1)
+            xsection = indices.xs(groups, level=self.groups)
+
+            if isnan(value):
+                return minint()
+
+            max_index = xsection.get_value(value, 'index')
+
+            if isinstance(max_index, Series):
+                max_index = max_index.max()
+
+            return max_index
+
+        groupby_max = self._groupby().max().reset_index()
+        column = groupby_max.apply(max_index_for_row, axis=1).apply(int)
         column.name = self.name
 
         return DataFrame(column).join(groupby_max[self.groups])
 
 
-class NewestAggregation(MultiColumnAggregation):
+class NewestAggregation(Aggregation):
     """For the newest index column get the value column."""
 
     formula_name = 'newest'
@@ -133,8 +150,11 @@ class NewestAggregation(MultiColumnAggregation):
     value_column = 1
 
     def agg(self):
-        idx = self.columns[self.index_column].argmax()
-        result = self.columns[self.value_column].ix[idx]
+        self.columns[self.index_column].name = 'index'
+        idframe = DataFrame(self.columns[self.value_column]).join(
+            self.columns[self.index_column]).dropna().reset_index()
+        idx = idframe['index'].argmax()
+        result = idframe[self.name].get_value(idx)
 
         return self._value_to_dframe(result)
 
