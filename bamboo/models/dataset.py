@@ -5,7 +5,7 @@ from time import gmtime, strftime
 
 from celery.task import task
 from celery.contrib.methods import task as class_task
-from pandas import concat, Series
+from pandas import concat, rolling_window, Series
 
 from bamboo.config.settings import DB_READ_BATCH_SIZE
 from bamboo.core.calculator import Calculator
@@ -82,6 +82,22 @@ class Dataset(AbstractModel):
         return [column[self.LABEL] for column in self.schema.values()]
 
     @property
+    def label(self):
+        return self.record.get(self.LABEL)
+
+    @property
+    def description(self):
+        return self.record.get(self.DESCRIPTION)
+
+    @property
+    def license(self):
+        return self.record.get(self.LICENSE)
+
+    @property
+    def attribution(self):
+        return self.record.get(self.ATTRIBUTION)
+
+    @property
     def stats(self):
         return self.record.get(self.STATS, {})
 
@@ -121,6 +137,10 @@ class Dataset(AbstractModel):
     @property
     def pending_updates(self):
         return self.record[self.PENDING_UPDATES]
+
+    @property
+    def updatable_keys(self):
+        return [self.LABEL, self.DESCRIPTION, self.LICENSE, self.ATTRIBUTION]
 
     def _linked_datasets(self, ids):
         return [self.find_one(_id) for _id in ids]
@@ -293,6 +313,7 @@ class Dataset(AbstractModel):
             select.update(dict(zip(groups, [1] * len(groups))))
             select = json.dumps(select)
 
+        self.reload()
         dframe = self.dframe(query=query, select=select,
                              limit=limit, order_by=order_by)
 
@@ -343,15 +364,24 @@ class Dataset(AbstractModel):
 
         self.update(update_dict)
 
-    def info(self):
-        """Return meta-data for this dataset."""
+    def info(self, update=None):
+        """Return or update meta-data for this dataset.
+
+        :param update: Dictionary to update info with, default None.
+        :returns: Dictionary of info for this dataset.
+        """
+        if update:
+            update_dict = {key: value for key, value in update.items()
+                           if key in self.updatable_keys}
+            self.update(update_dict)
+
         return {
             self.ID: self.dataset_id,
-            self.LABEL: '',
-            self.DESCRIPTION: '',
+            self.LABEL: self.label,
+            self.DESCRIPTION: self.description,
             self.SCHEMA: self.schema,
-            self.LICENSE: '',
-            self.ATTRIBUTION: '',
+            self.LICENSE: self.license,
+            self.ATTRIBUTION: self.attribution,
             self.CREATED_AT: self.record.get(self.CREATED_AT),
             self.UPDATED_AT: self.record.get(self.UPDATED_AT),
             self.NUM_COLUMNS: self.num_columns,
@@ -409,7 +439,7 @@ class Dataset(AbstractModel):
 
     def save_observations(self, dframe):
         """Save rows in `dframe` for this dataset."""
-        Observation().save(dframe, self)
+        Observation.save(dframe, self)
         return self.dframe()
 
     def replace_observations(self, dframe, overwrite=False,
@@ -503,3 +533,12 @@ class Dataset(AbstractModel):
         self.collection.update(
             {'_id': self.record['_id']},
             {'$pull': {self.PENDING_UPDATES: update_id}})
+
+    def resample(self, date_column, interval, how):
+        dframe = self.dframe().set_index(date_column)
+        resampled = dframe.resample(interval, how=how)
+        return BambooFrame(resampled.reset_index())
+
+    def rolling(self, win_type, window):
+        dframe = self.dframe()[self.schema.numeric_slugs]
+        return BambooFrame(rolling_window(dframe, window, win_type))

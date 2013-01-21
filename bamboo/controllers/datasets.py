@@ -5,8 +5,8 @@ from bamboo.core.frame import NonUniqueJoinError
 from bamboo.core.merge import merge_dataset_ids, MergeError
 from bamboo.core.summary import ColumnTypeError
 from bamboo.lib.exceptions import ArgumentError
-from bamboo.lib.io import create_dataset_from_url, create_dataset_from_csv,\
-    create_dataset_from_json, create_dataset_from_schema
+from bamboo.lib.io import import_data_from_url, import_data_from_csv,\
+    import_data_from_json, import_schema_for_dataset
 from bamboo.lib.utils import parse_int
 from bamboo.models.dataset import Dataset
 
@@ -42,11 +42,11 @@ class Datasets(AbstractController):
         :returns: A string of success or error if that dataset could not be
             found.
         """
-        def _action(dataset):
+        def action(dataset):
             dataset.delete()
             return {self.SUCCESS: 'deleted dataset: %s' % dataset_id}
 
-        return self._safe_get_and_call(dataset_id, _action)
+        return self._safe_get_and_call(dataset_id, action)
 
     def info(self, dataset_id, callback=False):
         """Fetch and return the meta-data for a dataset.
@@ -58,10 +58,26 @@ class Datasets(AbstractController):
         :returns: The data for `dataset_id`. Returns an error message if
             `dataset_id` does not exist.
         """
-        def _action(dataset):
+        def action(dataset):
             return dataset.info()
 
-        return self._safe_get_and_call(dataset_id, _action, callback=callback)
+        return self._safe_get_and_call(dataset_id, action, callback=callback)
+
+    def set_info(self, dataset_id, **kwargs):
+        """Set the metadata for a dataset.
+
+        :param dataset_id: ID of the dataset to update.
+        :param attribution: Text to set the attribution to.
+        :param description: Text to set the description to.
+        :param label: Text to set the label to.
+        :param license: Text to set the license to.
+
+        :returns: Success or error.
+        """
+        def action(dataset):
+            return dataset.info(kwargs)
+
+        return self._safe_get_and_call(dataset_id, action)
 
     def summary(self, dataset_id, query=None, select=None,
                 group=None, limit=0, order_by=None, callback=False):
@@ -89,7 +105,7 @@ class Datasets(AbstractController):
         :raises: `ArgumentError` if no select is supplied or dataset is not in
             ready state.
         """
-        def _action(dataset, select=select, limit=limit):
+        def action(dataset, select=select, limit=limit):
             if not dataset.is_ready:
                 raise ArgumentError('dataset is not finished importing')
             if select is None:
@@ -104,7 +120,7 @@ class Datasets(AbstractController):
                                      group, limit=limit,
                                      order_by=order_by)
 
-        return self._safe_get_and_call(dataset_id, _action, callback=callback,
+        return self._safe_get_and_call(dataset_id, action, callback=callback,
                                        exceptions=(ColumnTypeError,))
 
     def aggregations(self, dataset_id, callback=False):
@@ -117,10 +133,10 @@ class Datasets(AbstractController):
         :returns: An error message if `dataset_id` does not exist. Otherwise,
             returns a dict of the form {[group]: [id]}.
         """
-        def _action(dataset):
+        def action(dataset):
             return dataset.aggregated_datasets_dict
 
-        return self._safe_get_and_call(dataset_id, _action, callback=callback)
+        return self._safe_get_and_call(dataset_id, action, callback=callback)
 
     def show(self, dataset_id, query=None, select=None, distinct=None,
              limit=0, order_by=None, format=None, callback=False):
@@ -145,9 +161,9 @@ class Datasets(AbstractController):
             string of the rows matching the parameters.
         """
         limit = parse_int(limit, 0)
-        content_type = self.CSV if format == self.CSV else self.JSON
+        content_type = self._content_type_for_format(format)
 
-        def _action(dataset):
+        def action(dataset):
             dframe = dataset.dframe(
                 query=query, select=select, distinct=distinct,
                 limit=limit, order_by=order_by)
@@ -155,13 +171,10 @@ class Datasets(AbstractController):
             if distinct:
                 return sorted(dframe[0].tolist())
 
-            if content_type == self.CSV:
-                return dframe.to_csv_as_string()
-            else:
-                return dframe.to_jsondict()
+            return self._dataframe_as_content_type(content_type, dframe)
 
         return self._safe_get_and_call(
-            dataset_id, _action, callback=callback, content_type=content_type)
+            dataset_id, action, callback=callback, content_type=content_type)
 
     def merge(self, datasets=None):
         """Merge the datasets with the dataset_ids in `datasets`.
@@ -174,12 +187,12 @@ class Datasets(AbstractController):
             dataset created by combining the datasets provided as an argument.
         """
 
-        def _action(dataset):
+        def action(dataset):
             dataset = merge_dataset_ids(datasets)
             return {Dataset.ID: dataset.dataset_id}
 
         return self._safe_get_and_call(
-            None, _action, exceptions=(MergeError,), error = 'merge failed')
+            None, action, exceptions=(MergeError,), error = 'merge failed')
 
     def create(self, url=None, csv_file=None, json_file=None, schema=None,
                perish=0):
@@ -228,16 +241,20 @@ class Datasets(AbstractController):
         error = 'url, csv_file or schema required'
 
         try:
-            dataset = None
-            if url:
-                dataset = create_dataset_from_url(url)
-            elif csv_file:
-                dataset = create_dataset_from_csv(csv_file)
-            elif json_file:
-                dataset = create_dataset_from_json(json_file)
-            elif schema:
-                dataset = create_dataset_from_schema(schema)
-            if dataset:
+            if schema or url or csv_file or json_file:
+                dataset = Dataset()
+                dataset.save()
+
+                if schema:
+                    import_schema_for_dataset(dataset, schema)
+
+                if url:
+                    import_data_from_url(dataset, url)
+                elif csv_file:
+                    import_data_from_csv(dataset, csv_file)
+                elif json_file:
+                    import_data_from_json(dataset, json_file)
+
                 result = {Dataset.ID: dataset.dataset_id}
 
             perish = parse_int(perish, None)
@@ -260,12 +277,12 @@ class Datasets(AbstractController):
         :returns: A JSON dict with the ID of the dataset updated, or with an
             error message.
         """
-        def _action(dataset):
+        def action(dataset):
             dataset.add_observations(update)
             return {Dataset.ID: dataset_id}
 
         return self._safe_get_and_call(
-            dataset_id, _action, exceptions=(NonUniqueJoinError,))
+            dataset_id, action, exceptions=(NonUniqueJoinError,))
 
     def drop_columns(self, dataset_id, columns):
         """Drop columns in dataset.
@@ -278,13 +295,13 @@ class Datasets(AbstractController):
         :returns: An error if any column is not in the dataset. Otherwise a
             success message.
         """
-        def _action(dataset):
+        def action(dataset):
             dataset.drop_columns(columns)
 
             return {self.SUCCESS: 'in dataset %s dropped columns: %s' %
                     (dataset.dataset_id, columns)}
 
-        return self._safe_get_and_call(dataset_id, _action)
+        return self._safe_get_and_call(dataset_id, action)
 
     def join(self, dataset_id, other_dataset_id, on=None):
         """Join the columns from two existing datasets.
@@ -299,7 +316,7 @@ class Datasets(AbstractController):
 
         :returns: Success and merged dataset ID or error message.
         """
-        def _action(dataset):
+        def action(dataset):
             other_dataset = Dataset.find_one(other_dataset_id)
 
             if other_dataset.record:
@@ -312,4 +329,38 @@ class Datasets(AbstractController):
                 }
 
         return self._safe_get_and_call(
-            dataset_id, _action, exceptions=(KeyError, NonUniqueJoinError))
+            dataset_id, action, exceptions=(KeyError, NonUniqueJoinError))
+
+    def resample(self, dataset_id, date_column, interval, how='mean',
+                 format=None):
+        """Resample a dataset."""
+        content_type = self._content_type_for_format(format)
+
+        def action(dataset):
+            dframe = dataset.resample(date_column, interval, how)
+            return self._dataframe_as_content_type(content_type, dframe)
+
+        return self._safe_get_and_call(dataset_id, action,
+                                       exceptions=(TypeError,),
+                                       content_type=content_type)
+
+    def rolling(self, dataset_id, window, win_type='boxcar',
+                format=None):
+        """Calculate the rolling window over a dataset."""
+        content_type = self._content_type_for_format(format)
+
+        def action(dataset):
+            dframe = dataset.rolling(win_type, window)
+            return self._dataframe_as_content_type(content_type, dframe)
+
+        return self._safe_get_and_call(dataset_id, action,
+                                       content_type=content_type)
+
+    def _dataframe_as_content_type(self, content_type, dframe):
+        if content_type == self.CSV:
+            return dframe.to_csv_as_string()
+        else:
+            return dframe.to_jsondict()
+
+    def _content_type_for_format(self, format):
+        return self.CSV if format == self.CSV else self.JSON
