@@ -415,11 +415,11 @@ To compute *moving* or *rolling* statistics / moments you can use the
 ``rolling`` request.
 
 Any options that can be passed to the pandas ``rolling_window`` function
-(`pandas docs <http://pandas.pydata.org/pandas-docs/dev/computation.html#moving-rolling-statistics-moments`_)
+(`pandas docs <http://pandas.pydata.org/pandas-docs/dev/computation.html#moving-rolling-statistics-moments>`_)
 can be passed as parameters to bamboo.
 
 Window types are passed as the ``win_type`` parameter. See
-`here <https://en.wikipedia.org/wiki/Window_function#Window_examples`_ for
+`here <https://en.wikipedia.org/wiki/Window_function#Window_examples>`_ for
 window type definitions and examples.
 
 For example, to calculating a rolling mean with a window of 3 values, use the
@@ -427,7 +427,7 @@ following command:
 
 .. code-block:: sh
 
-    curl -X PUT -d "win_type=boxcar&window=3" http://bamboo.io/datasets/8a3d74711475d8a51c84484fe73f24bd151242ea/resample
+    curl -X PUT -d "win_type=boxcar&window=3" http://bamboo.io/datasets/8a3d74711475d8a51c84484fe73f24bd151242ea/rolling
 
 **returns:**
 
